@@ -164,7 +164,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "plot_scan",
-            "description": "Plot a single XAS scan. Plots the specified signal (TEY, TFY, or MCP) vs Mono Energy in eV. Optionally normalize by I0. Use e_min/e_max to zoom into a specific energy range.",
+            "description": "Plot a single XAS scan. Plots the specified signal (TEY, TFY, or MCP) vs Mono Energy in eV. Optionally normalize by I0. Use e_min/e_max to zoom into a specific energy range. Customize appearance with color, linestyle, linewidth.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -173,6 +173,9 @@ TOOLS = [
                     "normalize": {"type": "boolean", "description": "If true, divide signal by I0. Default false."},
                     "e_min": {"type": "number", "description": "Minimum energy in eV for the plot range (zoom). Optional."},
                     "e_max": {"type": "number", "description": "Maximum energy in eV for the plot range (zoom). Optional."},
+                    "color": {"type": "string", "description": "Line color. Named colors (red, blue, green, black, orange, purple, cyan, magenta, gray) or hex (#FF0000). Default: blue."},
+                    "linestyle": {"type": "string", "enum": ["-", "--", "-.", ":", "solid", "dashed", "dashdot", "dotted"], "description": "Line style. Default: solid ('-')."},
+                    "linewidth": {"type": "number", "description": "Line width in points. Default: 1.2."},
                 },
                 "required": ["scan_id", "signal"],
             },
@@ -182,7 +185,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "compare_scans",
-            "description": "Overlay multiple XAS scans on one plot for comparison. Supports energy range zoom, vertical offset/scale, and dual-axis mode for plotting two different signals (e.g. TEY on left axis, MCP on right axis).",
+            "description": "Overlay multiple XAS scans on one plot for comparison. Supports energy range zoom, vertical offset/scale, dual-axis mode, and per-curve styling. Use 'styles' array to customize each curve's color, linestyle, and linewidth.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -194,6 +197,18 @@ TOOLS = [
                     "e_max": {"type": "number", "description": "Maximum energy in eV for the plot range (zoom). Optional."},
                     "offset": {"type": "number", "description": "Vertical offset between curves when comparing multiple scans. Each successive scan is shifted up by this amount. Default 0."},
                     "scale": {"type": "number", "description": "Multiply all signal values by this factor. Default 1.0."},
+                    "styles": {
+                        "type": "array",
+                        "description": "Per-curve style overrides. Array of objects, one per scan (single-signal) or one per scan×signal (dual-axis: even indices=left axis, odd=right axis). Each object can have: color (string), linestyle (string), linewidth (number). Curves without a style entry use defaults.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "color": {"type": "string", "description": "Line color name or hex code."},
+                                "linestyle": {"type": "string", "description": "Line style: '-', '--', '-.', ':'."},
+                                "linewidth": {"type": "number", "description": "Line width in points."},
+                            },
+                        },
+                    },
                 },
                 "required": ["scan_ids"],
             },
@@ -359,7 +374,9 @@ def tool_list_scans(date: str = None, **kw) -> str:
 
 
 def tool_plot_scan(scan_id: str, signal: str, normalize: bool = False,
-                   e_min: float = None, e_max: float = None, **kw) -> str:
+                   e_min: float = None, e_max: float = None,
+                   color: str = "blue", linestyle: str = "-",
+                   linewidth: float = 1.2, **kw) -> str:
     global _last_plot
     try:
         sid, meta, df = _load(scan_id)
@@ -389,7 +406,8 @@ def tool_plot_scan(scan_id: str, signal: str, normalize: bool = False,
                 f"Full range is {energy.min():.2f}–{energy.max():.2f} eV.")
 
     fig, ax = plt.subplots()
-    ax.plot(energy_plot, signal_plot, "b-", linewidth=1.2)
+    ax.plot(energy_plot, signal_plot, color=color, linestyle=linestyle,
+            linewidth=linewidth)
     ax.set_xlabel("Mono Energy (eV)")
     ax.set_ylabel(ylabel)
     title = f"{sid}  —  {meta['scan_type']}  ({meta['date']})"
@@ -404,9 +422,24 @@ def tool_plot_scan(scan_id: str, signal: str, normalize: bool = False,
     return f"Plotted {ylabel} for {sid}. Energy: {range_info}."
 
 
+def _get_style(styles: list, index: int, defaults: dict) -> dict:
+    """Get style for curve at given index, merging with defaults."""
+    style = dict(defaults)
+    if styles and index < len(styles) and styles[index]:
+        s = styles[index]
+        if "color" in s and s["color"]:
+            style["color"] = s["color"]
+        if "linestyle" in s and s["linestyle"]:
+            style["linestyle"] = s["linestyle"]
+        if "linewidth" in s and s["linewidth"]:
+            style["linewidth"] = float(s["linewidth"])
+    return style
+
+
 def tool_compare_scans(scan_ids: list, signal: str = None, signals: list = None,
                        normalize: bool = False, e_min: float = None, e_max: float = None,
-                       offset: float = 0, scale: float = 1.0, **kw) -> str:
+                       offset: float = 0, scale: float = 1.0,
+                       styles: list = None, **kw) -> str:
     global _last_plot
 
     # Determine signal mode: single signal or dual-axis
@@ -429,13 +462,16 @@ def tool_compare_scans(scan_ids: list, signal: str = None, signals: list = None,
     fig, ax_left = plt.subplots()
     ax_right = ax_left.twinx() if dual_axis else None
 
-    # Color cycles for dual-axis mode
-    colors_left = plt.cm.tab10.colors
-    colors_right = plt.cm.Set2.colors
+    # Default color cycles
+    colors_left = list(plt.cm.tab10.colors)
+    colors_right = list(plt.cm.Set2.colors)
 
     # Pre-compute ylabel for single-signal mode (avoids UnboundLocalError if all points filtered)
     if not dual_axis:
         ylabel = f"{signal} / I0" if normalize else signal
+
+    # Style index counter for dual-axis (left=even, right=odd)
+    style_idx = 0
 
     for i, (sid, meta, df) in enumerate(loaded):
         energy = xu.get_energy(df)
@@ -457,32 +493,34 @@ def tool_compare_scans(scan_ids: list, signal: str = None, signals: list = None,
             # Left axis signal
             if normalize:
                 data_l = xu.normalize_by_i0(df, sig_left)[mask] * scale + v_offset
-                lbl_l = f"{sig_left}/I0"
             else:
                 data_l = xu.get_signal(df, sig_left)[mask] * scale + v_offset
-                lbl_l = sig_left
-            ax_left.plot(energy_f, data_l, linewidth=1.0, label=f"{sid} {sig_left}",
-                         color=colors_left[i % len(colors_left)])
+            sty_l = _get_style(styles, style_idx, {
+                "color": colors_left[i % len(colors_left)],
+                "linestyle": "-", "linewidth": 1.0})
+            ax_left.plot(energy_f, data_l, label=f"{sid} {sig_left}", **sty_l)
+            style_idx += 1
 
             # Right axis signal
             if normalize:
                 data_r = xu.normalize_by_i0(df, sig_right)[mask] * scale + v_offset
-                lbl_r = f"{sig_right}/I0"
             else:
                 data_r = xu.get_signal(df, sig_right)[mask] * scale + v_offset
-                lbl_r = sig_right
-            ax_right.plot(energy_f, data_r, linewidth=1.0, label=f"{sid} {sig_right}",
-                          color=colors_right[i % len(colors_right)], linestyle="--")
+            sty_r = _get_style(styles, style_idx, {
+                "color": colors_right[i % len(colors_right)],
+                "linestyle": "--", "linewidth": 1.0})
+            ax_right.plot(energy_f, data_r, label=f"{sid} {sig_right}", **sty_r)
+            style_idx += 1
         else:
             # Single signal mode
             if normalize:
                 sig_data = xu.normalize_by_i0(df, signal)[mask] * scale + v_offset
-                ylabel = f"{signal} / I0"
             else:
                 sig_data = xu.get_signal(df, signal)[mask] * scale + v_offset
-                ylabel = signal
-            ax_left.plot(energy_f, sig_data, linewidth=1.0, label=sid,
-                         color=colors_left[i % len(colors_left)])
+            sty = _get_style(styles, i, {
+                "color": colors_left[i % len(colors_left)],
+                "linestyle": "-", "linewidth": 1.0})
+            ax_left.plot(energy_f, sig_data, label=sid, **sty)
 
     ax_left.set_xlabel("Mono Energy (eV)")
 
@@ -913,6 +951,10 @@ Rules:
 - When the user asks to plot two different signals (e.g. "plot TEY and MCP"), use compare_scans with signals=['TEY', 'MCP'] for dual-axis
 - When the user asks to "offset" or "stack" curves, use the offset parameter in compare_scans
 - When the user asks to "scale" or "multiply" signals, use the scale parameter in compare_scans
+- When the user asks to change line color, thickness, or style (e.g. "use a red dashed line", "make it thicker", "use dotted lines"), use the color/linestyle/linewidth parameters in plot_scan, or the styles array in compare_scans
+- For compare_scans styles: pass an array of objects like [{{"color":"red","linewidth":2}}, {{"color":"blue","linestyle":"--"}}], one per curve. In dual-axis mode, even indices are left-axis curves, odd indices are right-axis curves.
+- Available linestyles: '-' (solid), '--' (dashed), '-.' (dashdot), ':' (dotted)
+- Available colors: any named color (red, blue, green, black, orange, purple, cyan, magenta, gray, etc.) or hex codes (#FF0000)
 - When the user says "normalize", use normalize_scan
 - When the user says "derivative", "1st derivative", "2nd derivative", or "d/dE", use derivative_scan
 - When the user says "find peaks", "detect peaks", or "peak detection", use find_peaks_scan
