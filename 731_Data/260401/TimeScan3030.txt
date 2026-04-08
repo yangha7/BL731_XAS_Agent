@@ -1,0 +1,6 @@
+Date: 4/1/2026
+1
+
+600	0
+0.00000000	1.00000000	0.00000000	0.00000000	0.50000000	0.00000000
+Time of Day	Time (s)	I0	TEY UHV XAS	TFY UHV XAS	Dev1_ai2_I2	Dev1_ai3_TEYCell	Dev1_ai4_Cell TEY(Temp)	Dev1_ai5	Dev1_ai6	Dev1_ai7	Dev1_ai8	Dev1_ai9	Dev1_ai10	Dev1_ai11	Dev1_ai12	Dev1_ai13	Dev1_ai14	Dev1_ai15	Beam Current	UHV XAS X	UHV XAS Y	UHV XAS Z	UHV XAS Theta	Aperture A	Aperture B	Slit C	Slit D	Gate	Grating Motor Position	Grating Translate	Mask	Mono Air	Mono Tank	Mono Table	Mono Cooling	Mono Support	Slot_1 Ch 5	Slot_1 Ch 6	Slot_1 Ch 7	Air	Mono chamber Al support	Mono chamber cooling line	Mono chamber Flange	Mirror chamber pipe	Mirror chamber struts	Main chamber struts	Main chamber pipe	Slot2_ch0	MCP Rate	MCP Np	MCP TBin 0	MCP Python	SDD Counts	SDD Counts 2	

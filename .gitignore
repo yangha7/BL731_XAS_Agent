@@ -1,0 +1,28 @@
+# Environment & secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Jupyter
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Exported data (user-generated)
+exported_data/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo

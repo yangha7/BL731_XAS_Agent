@@ -1,0 +1,17 @@
+Date: 4/2/2026
+
+From File
+Mono eV Calib low E Grating
+C:\Beamline Controls\Scan file\Chueh\O K Edge_2602.txt
+: 0.00000000
+: 0.00000000
+: 0.00000000
+Delay After Move (s): 0.20000000
+Count Time (s): 1.00000000
+Scan Number: 1
+Bi-directional: No
+Stay at End: 0
+Description Length: 0
+
+Time of Day	Time (s)	Mono eV Calib low E Grating	I0	TEY UHV XAS	TFY UHV XAS	Dev1_ai2_I2	Dev1_ai3_TEYCell	Dev1_ai4_Cell TEY(Temp)	Dev1_ai5	Dev1_ai6	Dev1_ai7	Dev1_ai8	Dev1_ai9	Dev1_ai10	Dev1_ai11	Dev1_ai12	Dev1_ai13	Dev1_ai14	Dev1_ai15	Beam Current	UHV XAS X	UHV XAS Y	UHV XAS Z	UHV XAS Theta	Aperture A	Aperture B	Slit C	Slit D	Gate	Grating Motor Position	Grating Translate	Mask	Mono Air	Mono Tank	Mono Table	Mono Cooling	Mono Support	Slot_1 Ch 5	Slot_1 Ch 6	Slot_1 Ch 7	Air	Mono chamber Al support	Mono chamber cooling line	Mono chamber Flange	Mirror chamber pipe	Mirror chamber struts	Main chamber struts	Main chamber pipe	Slot2_ch0	MCP Rate	MCP Np	MCP TBin 0	MCP Python	SDD Counts	SDD Counts 2
+02:00:47	741202.68900000	519.99913105	0.22704907	-0.02072775	0.00000000	0.02587916	-1.74517237	-1.75266750	0.00000000	0.00000000	0.00000000	0.00000000	0.00000000	0.32707948	0.00000000	0.00000000	0.00000000	0.00000000	0.00000000	500.39887976	14.70185714	2.37700000	60.00000000	-0.05600000	0.00000000	0.00000000	0.00000000	0.00000000	0.00000000	0.76969898	-57.99998560	0.00000000	0.00000000	0.00000000	0.00000000	0.00000000	0.00000000	0.00000000	0.00000000	0.00000000	0.00000000	0.00000000	0.00000000	0.00000000	0.00000000	0.00000000	0.00000000	0.00000000	0.00000000	0.00000000	0.00000000	0.00000000	0.00000000	0.00000000	0.00000000
