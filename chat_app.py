@@ -439,17 +439,24 @@ def _format_scan_info(scan_id: str) -> str:
         return f"Scan {scan_id}: Error – {e}"
     energy = xu.get_energy(df)
     signals = xu.list_available_signals(df)
-    return "\n".join([
+    lines = [
         f"Scan: {sid}",
         f"Date: {meta['date']}",
+        f"Scan Mode: {meta.get('scan_mode', 'unknown')}",
         f"Scan Type: {meta['scan_type']}",
-        f"Scan File: {meta['scan_file']}",
+    ]
+    if meta.get("scan_file"):
+        lines.append(f"Scan File: {meta['scan_file']}")
+    if "start" in meta:
+        lines.append(f"Start: {meta['start']:.2f} eV, Stop: {meta['stop']:.2f} eV, Step: {meta['increment']:.5f} eV")
+    lines.extend([
         f"Count Time: {meta['count_time']}s",
         f"Delay After Move: {meta['delay_after_move']}s",
         f"Energy Range: {energy.min():.2f} – {energy.max():.2f} eV",
         f"Data Points: {len(df)}",
         f"Available Signals: {', '.join(signals)}",
     ])
+    return "\n".join(lines)
 
 
 def tool_show_scan_info(scan_id: str = None, scan_ids: list = None, **kw) -> str:

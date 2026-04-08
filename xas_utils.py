@@ -20,8 +20,11 @@ from scipy.interpolate import UnivariateSpline
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-HEADER_LINES = 15          # Lines before the column-header row
-ENERGY_COL = "Mono eV Calib high E Grating"
+HEADER_LINES = 15          # Default lines before the column-header row (may vary by scan mode)
+ENERGY_COL_CANDIDATES = [
+    "Mono eV Calib high E Grating",
+    "Mono eV Calib low E Grating",
+]
 TEY_COL = "TEY UHV XAS"
 TFY_COL = "TFY UHV XAS"
 I0_COL = "I0"
@@ -52,13 +55,34 @@ def _extract_int(line: str) -> int:
 
 
 def parse_header(filepath: str) -> dict:
-    """Read only the first 15 lines to extract metadata."""
+    """Read only the first 15 lines to extract metadata.
+
+    Handles two scan modes:
+      - Simple mode (line 3 = "Start, Stop, Increment"):
+            line 4 = scan_type, line 5 = "Start: ...", line 6 = "Stop: ...",
+            line 7 = "Increment: ...", line 5 stored as scan_file = ""
+      - Region file mode (line 3 = "From File"):
+            line 4 = scan_type, line 5 = region file path
+    Lines 9-12 are the same in both modes.
+    """
     meta = {}
     with open(filepath, "r") as f:
         lines = [next(f).rstrip("\n") for _ in range(HEADER_LINES)]
     meta["date"] = lines[0].replace("Date: ", "").strip() if lines[0].startswith("Date:") else ""
     meta["scan_type"] = lines[3].strip()
-    meta["scan_file"] = lines[4].strip()
+
+    # Detect scan mode from line 3 (index 2)
+    scan_mode = lines[2].strip()
+    meta["scan_mode"] = scan_mode
+    if scan_mode == "From File":
+        meta["scan_file"] = lines[4].strip()
+    else:
+        # Simple mode: line 5 is "Start: ...", not a file path
+        meta["scan_file"] = ""
+        meta["start"] = _extract_float(lines[4])
+        meta["stop"] = _extract_float(lines[5])
+        meta["increment"] = _extract_float(lines[6])
+
     meta["delay_after_move"] = _extract_float(lines[8])
     meta["count_time"] = _extract_float(lines[9])
     meta["scan_number"] = _extract_int(lines[10])
@@ -68,9 +92,26 @@ def parse_header(filepath: str) -> dict:
     return meta
 
 
+def _detect_header_lines(filepath: str) -> int:
+    """Detect the number of header lines before the column-header row.
+
+    Scans for the line containing 'Time of Day' (always the first column).
+    Returns the 0-indexed row number of that line, so skiprows=N skips
+    everything before it.
+    """
+    with open(filepath, "r") as f:
+        for i, line in enumerate(f):
+            if line.startswith("Time of Day"):
+                return i
+            if i > 30:  # safety limit
+                break
+    return HEADER_LINES  # fallback to default
+
+
 def load_scan(filepath: str) -> pd.DataFrame:
     """Load a single scan file into a DataFrame."""
-    df = pd.read_csv(filepath, sep="\t", skiprows=HEADER_LINES, header=0, engine="python")
+    skip = _detect_header_lines(filepath)
+    df = pd.read_csv(filepath, sep="\t", skiprows=skip, header=0, engine="python")
     df.columns = [c.strip() for c in df.columns]
     return df
 
@@ -239,8 +280,23 @@ def _resolve_date_filter(date_filter: str) -> set[str]:
 # Signal helpers
 # ---------------------------------------------------------------------------
 
+def _find_energy_col(df: pd.DataFrame) -> str:
+    """Find the energy column name dynamically."""
+    for col in ENERGY_COL_CANDIDATES:
+        if col in df.columns:
+            return col
+    # Fallback: look for any column containing "Mono" and "eV"
+    for col in df.columns:
+        if "Mono" in col and "eV" in col:
+            return col
+    raise KeyError(
+        f"No energy column found. Tried {ENERGY_COL_CANDIDATES}. "
+        f"Available columns: {list(df.columns)}"
+    )
+
+
 def get_energy(df: pd.DataFrame) -> np.ndarray:
-    return df[ENERGY_COL].values
+    return df[_find_energy_col(df)].values
 
 
 def get_signal(df: pd.DataFrame, signal_name: str) -> np.ndarray:
