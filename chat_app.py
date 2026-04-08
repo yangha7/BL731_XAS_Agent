@@ -730,11 +730,11 @@ def tool_identify_edge(scan_id: str, signal: str, **kw) -> str:
 def tool_rename_scan(scan_id: str, new_name: str, **kw) -> str:
     """Copy a scan file to exported_data/renamed/ with a descriptive name."""
     try:
-        sid = xas_utils.resolve_scan_id(scan_id)
+        sid = xu.resolve_scan_id(scan_id)
     except Exception as e:
         return f"Error: {e}"
     try:
-        dst = xas_utils.rename_scan(sid, new_name)
+        dst = xu.rename_scan(sid, new_name)
         return (f"Scan {sid} copied successfully.\n"
                 f"  New file: {dst}\n"
                 f"  (Original raw data is unchanged.)")
