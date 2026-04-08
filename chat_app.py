@@ -882,6 +882,99 @@ HTML_TEMPLATE = r"""
     flex-shrink: 0;
   }
   header small { font-weight: 400; opacity: 0.8; font-size: 13px; }
+
+  /* ── Main layout: sidebar + chat ─────────────────────────────────────── */
+  #main-container {
+    flex: 1;
+    display: flex;
+    overflow: hidden;
+  }
+
+  /* ── Left sidebar: file explorer ─────────────────────────────────────── */
+  #sidebar {
+    width: 260px;
+    min-width: 200px;
+    max-width: 400px;
+    background: #252526;
+    color: #cccccc;
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid #1e1e1e;
+    flex-shrink: 0;
+    overflow: hidden;
+  }
+  #sidebar-header {
+    padding: 10px 14px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: #888;
+    border-bottom: 1px solid #333;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  #sidebar-header button {
+    background: none;
+    border: none;
+    color: #888;
+    cursor: pointer;
+    font-size: 14px;
+    padding: 2px 6px;
+    border-radius: 4px;
+  }
+  #sidebar-header button:hover { background: #3c3c3c; color: #ccc; }
+  #file-tree {
+    flex: 1;
+    overflow-y: auto;
+    padding: 4px 0;
+    font-size: 13px;
+  }
+  #file-tree::-webkit-scrollbar { width: 8px; }
+  #file-tree::-webkit-scrollbar-track { background: #252526; }
+  #file-tree::-webkit-scrollbar-thumb { background: #424242; border-radius: 4px; }
+
+  .tree-item {
+    display: flex;
+    align-items: center;
+    padding: 3px 8px;
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+  }
+  .tree-item:hover { background: #2a2d2e; }
+  .tree-item.selected { background: #094771; color: #fff; }
+  .tree-item .icon {
+    width: 18px;
+    text-align: center;
+    margin-right: 4px;
+    font-size: 12px;
+    flex-shrink: 0;
+  }
+  .tree-item .label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .tree-children { display: none; }
+  .tree-children.open { display: block; }
+
+  /* ── Resize handle ───────────────────────────────────────────────────── */
+  #resize-handle {
+    width: 4px;
+    cursor: col-resize;
+    background: transparent;
+    flex-shrink: 0;
+  }
+  #resize-handle:hover { background: #007acc; }
+
+  /* ── Right panel: chat ───────────────────────────────────────────────── */
+  #chat-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
   #chat-area {
     flex: 1;
     overflow-y: auto;
@@ -890,7 +983,7 @@ HTML_TEMPLATE = r"""
     flex-direction: column;
     gap: 12px;
   }
-  .msg { max-width: 85%; padding: 10px 14px; border-radius: 12px; line-height: 1.5; }
+  .msg { max-width: 85%; padding: 10px 14px; border-radius: 12px; line-height: 1.5; word-wrap: break-word; }
   .msg.user {
     align-self: flex-end;
     background: #e3f2fd;
@@ -986,17 +1079,34 @@ HTML_TEMPLATE = r"""
     <small>— Talk to your XAS data in natural language</small>
   </header>
 
-  <div id="chat-area">
-    <div class="welcome">
-      🤖 XAS Agent ready!<br>
-      Try: <b>List all scans</b> · <b>Plot TEY for 45612</b> · <b>Compare TEY of 45611, 45612, 45613</b> · <b>Save the last plot</b>
+  <div id="main-container">
+    <!-- ── Left sidebar: file explorer ──────────────────────────────────── -->
+    <div id="sidebar">
+      <div id="sidebar-header">
+        <span>📁 Data Explorer</span>
+        <button id="refresh-tree" title="Refresh file list">⟳</button>
+      </div>
+      <div id="file-tree"></div>
     </div>
-  </div>
 
-  <div id="input-area">
-    <input type="text" id="msg-input" placeholder="Type your message…" autocomplete="off" autofocus />
-    <button id="send-btn">Send</button>
-    <button id="clear-btn">Clear</button>
+    <div id="resize-handle"></div>
+
+    <!-- ── Right panel: chat ────────────────────────────────────────────── -->
+    <div id="chat-panel">
+      <div id="chat-area">
+        <div class="welcome">
+          🤖 XAS Agent ready!<br>
+          Try: <b>List all scans</b> · <b>Plot TEY for 45612</b> · <b>Compare TEY of 45611, 45612, 45613</b> · <b>Save the last plot</b><br>
+          <small>💡 Double-click a file in the left panel to paste its name into the chat.</small>
+        </div>
+      </div>
+
+      <div id="input-area">
+        <input type="text" id="msg-input" placeholder="Type your message…" autocomplete="off" autofocus />
+        <button id="send-btn">Send</button>
+        <button id="clear-btn">Clear</button>
+      </div>
+    </div>
   </div>
 
 <script>
@@ -1128,6 +1238,146 @@ msgInput.addEventListener("keydown", e => {
   }
 });
 clearBtn.addEventListener("click", clearChat);
+
+// ── File Explorer ─────────────────────────────────────────────────────────
+const fileTree = document.getElementById("file-tree");
+const refreshBtn = document.getElementById("refresh-tree");
+
+function extractScanId(filename) {
+  // Extract scan ID from filenames like SigScan45611.txt or SigScan45666-0001.txt
+  const m = filename.match(/SigScan(\d+(?:-\d+)?)/);
+  return m ? m[1] : filename.replace(/\.txt$/i, "");
+}
+
+function createTreeItem(node, depth) {
+  const container = document.createElement("div");
+
+  if (node.type === "dir") {
+    // Folder item
+    const item = document.createElement("div");
+    item.className = "tree-item";
+    item.style.paddingLeft = (8 + depth * 16) + "px";
+    item.innerHTML =
+      '<span class="icon">▶</span>' +
+      '<span class="label">📁 ' + node.name + '</span>';
+
+    const childrenDiv = document.createElement("div");
+    childrenDiv.className = "tree-children";
+    node.children.forEach(child => {
+      childrenDiv.appendChild(createTreeItem(child, depth + 1));
+    });
+
+    // Click to toggle folder
+    item.addEventListener("click", () => {
+      const isOpen = childrenDiv.classList.toggle("open");
+      item.querySelector(".icon").textContent = isOpen ? "▼" : "▶";
+    });
+
+    container.appendChild(item);
+    container.appendChild(childrenDiv);
+  } else {
+    // File item
+    const item = document.createElement("div");
+    item.className = "tree-item";
+    item.style.paddingLeft = (8 + depth * 16) + "px";
+    item.innerHTML =
+      '<span class="icon"> </span>' +
+      '<span class="label">📄 ' + node.name + '</span>';
+
+    // Double-click to paste scan ID into chat input
+    item.addEventListener("dblclick", (e) => {
+      e.preventDefault();
+      const scanId = extractScanId(node.name);
+      const input = document.getElementById("msg-input");
+      // Insert at cursor position (or append)
+      const start = input.selectionStart;
+      const end = input.selectionEnd;
+      const val = input.value;
+      input.value = val.substring(0, start) + scanId + val.substring(end);
+      input.focus();
+      input.selectionStart = input.selectionEnd = start + scanId.length;
+      // Deselect all tree items, highlight this one
+      document.querySelectorAll(".tree-item.selected").forEach(el => el.classList.remove("selected"));
+      item.classList.add("selected");
+    });
+
+    // Single click to highlight
+    item.addEventListener("click", () => {
+      document.querySelectorAll(".tree-item.selected").forEach(el => el.classList.remove("selected"));
+      item.classList.add("selected");
+    });
+
+    container.appendChild(item);
+  }
+
+  return container;
+}
+
+async function loadFileTree() {
+  fileTree.innerHTML = '<div style="padding:12px;color:#888;font-size:12px;">Loading…</div>';
+  try {
+    const resp = await fetch("/api/files");
+    const data = await resp.json();
+    fileTree.innerHTML = "";
+
+    // Root folder (auto-expanded)
+    const rootItem = document.createElement("div");
+    rootItem.className = "tree-item";
+    rootItem.style.paddingLeft = "8px";
+    rootItem.innerHTML =
+      '<span class="icon">▼</span>' +
+      '<span class="label" style="font-weight:600;">📁 ' + data.root + '</span>';
+
+    const rootChildren = document.createElement("div");
+    rootChildren.className = "tree-children open";
+    data.children.forEach(child => {
+      rootChildren.appendChild(createTreeItem(child, 1));
+    });
+
+    rootItem.addEventListener("click", () => {
+      const isOpen = rootChildren.classList.toggle("open");
+      rootItem.querySelector(".icon").textContent = isOpen ? "▼" : "▶";
+    });
+
+    fileTree.appendChild(rootItem);
+    fileTree.appendChild(rootChildren);
+  } catch (err) {
+    fileTree.innerHTML = '<div style="padding:12px;color:#f44;font-size:12px;">Failed to load files</div>';
+  }
+}
+
+refreshBtn.addEventListener("click", loadFileTree);
+
+// ── Sidebar resize ────────────────────────────────────────────────────────
+const sidebar = document.getElementById("sidebar");
+const resizeHandle = document.getElementById("resize-handle");
+let isResizing = false;
+
+resizeHandle.addEventListener("mousedown", (e) => {
+  isResizing = true;
+  document.body.style.cursor = "col-resize";
+  document.body.style.userSelect = "none";
+  e.preventDefault();
+});
+
+document.addEventListener("mousemove", (e) => {
+  if (!isResizing) return;
+  const newWidth = e.clientX;
+  if (newWidth >= 150 && newWidth <= 500) {
+    sidebar.style.width = newWidth + "px";
+  }
+});
+
+document.addEventListener("mouseup", () => {
+  if (isResizing) {
+    isResizing = false;
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+  }
+});
+
+// Load file tree on startup
+loadFileTree();
 </script>
 </body>
 </html>
@@ -1157,6 +1407,32 @@ def clear_endpoint():
     global conversation
     conversation = [{"role": "system", "content": SYSTEM_PROMPT}]
     return jsonify({"status": "ok"})
+
+
+@app.route("/api/files", methods=["GET"])
+def list_data_files():
+    """Return the data directory tree as JSON for the file explorer panel."""
+    def _build_tree(root_dir: str) -> list:
+        entries = []
+        try:
+            items = sorted(os.listdir(root_dir))
+        except OSError:
+            return entries
+        # Directories first, then files
+        dirs = [i for i in items if os.path.isdir(os.path.join(root_dir, i))]
+        files = [i for i in items if os.path.isfile(os.path.join(root_dir, i))
+                 and i.endswith(".txt") and not i.startswith(".")]
+        for d in dirs:
+            if d.startswith("."):
+                continue
+            children = _build_tree(os.path.join(root_dir, d))
+            entries.append({"name": d, "type": "dir", "children": children})
+        for f in files:
+            entries.append({"name": f, "type": "file"})
+        return entries
+
+    tree = _build_tree(DATA_DIR)
+    return jsonify({"root": os.path.basename(DATA_DIR), "children": tree})
 
 
 if __name__ == "__main__":
