@@ -210,13 +210,14 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "show_scan_info",
-            "description": "Show detailed metadata, energy range, and available signals for a specific scan.",
+            "description": "Show detailed metadata, energy range, and available signals for one or more scans. Pass a single scan_id string OR a scan_ids array for batch queries.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "scan_id": {"type": "string", "description": "Scan identifier."},
+                    "scan_id": {"type": "string", "description": "Single scan identifier (e.g. '45611')."},
+                    "scan_ids": {"type": "array", "items": {"type": "string"}, "description": "List of scan identifiers for batch metadata queries."},
                 },
-                "required": ["scan_id"],
+                "required": [],
             },
         },
     },
@@ -428,11 +429,14 @@ def tool_save_data(filename: str = None, **kw) -> str:
     return f"Data saved to: {path}"
 
 
-def tool_show_scan_info(scan_id: str, **kw) -> str:
+def _format_scan_info(scan_id: str) -> str:
+    """Return formatted metadata for a single scan, or an error string."""
     try:
         sid, meta, df = _load(scan_id)
     except FileNotFoundError as e:
-        return str(e)
+        return f"Scan {scan_id}: {e}"
+    except Exception as e:
+        return f"Scan {scan_id}: Error – {e}"
     energy = xu.get_energy(df)
     signals = xu.list_available_signals(df)
     return "\n".join([
@@ -446,6 +450,26 @@ def tool_show_scan_info(scan_id: str, **kw) -> str:
         f"Data Points: {len(df)}",
         f"Available Signals: {', '.join(signals)}",
     ])
+
+
+def tool_show_scan_info(scan_id: str = None, scan_ids: list = None, **kw) -> str:
+    """Show metadata for one or more scans."""
+    ids = []
+    if scan_ids:
+        ids = list(scan_ids)
+    elif scan_id:
+        ids = [scan_id]
+    else:
+        return "Error: Please provide a scan_id or scan_ids."
+
+    if len(ids) == 1:
+        return _format_scan_info(ids[0])
+
+    # Multiple scans — format each with a separator
+    results = []
+    for sid in ids:
+        results.append(_format_scan_info(sid))
+    return "\n\n---\n\n".join(results)
 
 
 def tool_normalize_scan(scan_id: str, signal: str, e0: float = None, flatten: bool = False, **kw) -> str:
@@ -767,6 +791,7 @@ Rules:
 - If the user asks to list scans without specifying a date, default to the past week
 - If the user mentions a specific date like "April 1st" or "yesterday", convert it to the appropriate date filter
 - When the user asks about a specific scan's details, use show_scan_info
+- When the user asks for metadata on multiple scans, use show_scan_info with scan_ids (array) instead of calling it multiple times
 - I0 is the incident beam intensity; normalizing by I0 removes beam current variations
 - normalize_scan always divides by I0 first, then does pre-edge subtraction and post-edge normalization
 - derivative_scan always divides by I0 first, then computes the derivative
@@ -799,7 +824,10 @@ def agent_chat(user_message: str) -> dict:
             fn_args = json.loads(tc.function.arguments)
             tools_used.append(f"🔧 {fn_name}({json.dumps(fn_args)})")
             fn = TOOL_DISPATCH.get(fn_name)
-            result = fn(**fn_args) if fn else f"Error: Unknown tool '{fn_name}'"
+            try:
+                result = fn(**fn_args) if fn else f"Error: Unknown tool '{fn_name}'"
+            except Exception as exc:
+                result = f"Error in {fn_name}: {exc}"
             conversation.append({"role": "tool", "tool_call_id": tc.id, "content": str(result)})
 
         response = client.chat.completions.create(
