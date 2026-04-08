@@ -285,6 +285,21 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "rename_scan",
+            "description": "Copy a scan file to the exported_data/renamed/ directory with a user-specified descriptive name. The original raw data file is never modified.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "scan_id": {"type": "string", "description": "Scan identifier (e.g. '45611' or 'SigScan45611')."},
+                    "new_name": {"type": "string", "description": "Descriptive name for the copy (e.g. 'Cu_L3_edge_sample_A'). A .txt extension is added automatically if missing."},
+                },
+                "required": ["scan_id", "new_name"],
+            },
+        },
+    },
 ]
 
 
@@ -681,6 +696,23 @@ def tool_identify_edge(scan_id: str, signal: str, **kw) -> str:
     return "\n".join(lines)
 
 
+def tool_rename_scan(scan_id: str, new_name: str, **kw) -> str:
+    """Copy a scan file to exported_data/renamed/ with a descriptive name."""
+    try:
+        sid = xas_utils.resolve_scan_id(scan_id)
+    except Exception as e:
+        return f"Error: {e}"
+    try:
+        dst = xas_utils.rename_scan(sid, new_name)
+        return (f"Scan {sid} copied successfully.\n"
+                f"  New file: {dst}\n"
+                f"  (Original raw data is unchanged.)")
+    except FileNotFoundError as e:
+        return f"Error: {e}"
+    except Exception as e:
+        return f"Error copying scan: {e}"
+
+
 TOOL_DISPATCH = {
     "list_scans": tool_list_scans,
     "plot_scan": tool_plot_scan,
@@ -691,6 +723,7 @@ TOOL_DISPATCH = {
     "derivative_scan": tool_derivative_scan,
     "find_peaks_scan": tool_find_peaks_scan,
     "identify_edge": tool_identify_edge,
+    "rename_scan": tool_rename_scan,
 }
 
 
@@ -717,6 +750,7 @@ Available tools:
 - find_peaks_scan: Detect peaks and shoulders with tunable sensitivity
 - identify_edge: Identify element and absorption edge from peak energies and metadata
 - save_data: Save the last plotted data to a text file
+- rename_scan: Copy a scan file with a descriptive name to exported_data/renamed/ (original raw data is never modified)
 
 Rules:
 - The user may refer to scans by full ID (SigScan45611) or just the number (45611)
@@ -728,6 +762,7 @@ Rules:
 - When the user says "find more peaks" or "more features", use find_peaks_scan with higher sensitivity
 - When the user asks "what element" or "what edge" or "identify", use identify_edge
 - When the user says "save" or "export", use save_data
+- When the user says "rename", "copy as", or "save as", use rename_scan to create a named copy
 - When the user asks to "list" scans, use list_scans with an appropriate date filter
 - If the user asks to list scans without specifying a date, default to the past week
 - If the user mentions a specific date like "April 1st" or "yesterday", convert it to the appropriate date filter

@@ -134,6 +134,7 @@ The agent has access to the following analysis tools, which it calls automatical
 | **find_peaks_scan** | Detect peaks and shoulders with tunable sensitivity | *"Find peaks in scan 45616 MCP"* |
 | **identify_edge** | Identify element and absorption edge from peak energies + metadata | *"What element is scan 45616?"* |
 | **save_data** | Export the last plotted data to a text file | *"Save that data"* |
+| **rename_scan** | Copy a scan with a descriptive name (original unchanged) | *"Rename scan 45616 to Cu_L3_edge_sample_A"* |
 
 ### Peak Detection Sensitivity
 

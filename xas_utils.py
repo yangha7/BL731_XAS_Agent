@@ -665,13 +665,56 @@ def _detect_shoulders(
 
 
 # ---------------------------------------------------------------------------
-# Export
+# Export & Rename
 # ---------------------------------------------------------------------------
 
 def ensure_export_dir(subdir: str | None = None) -> str:
     path = os.path.join(EXPORT_DIR, subdir) if subdir else EXPORT_DIR
     os.makedirs(path, exist_ok=True)
     return path
+
+
+def rename_scan(scan_id: str, new_name: str, data_dir: str = DATA_DIR) -> str:
+    """Copy a scan file to the export directory with a new user-specified name.
+
+    The original raw data file is never modified. A copy is created in
+    the exported_data directory with the new name.
+
+    Parameters
+    ----------
+    scan_id : str
+        Original scan identifier (e.g. '45616' or 'SigScan45616').
+    new_name : str
+        New descriptive filename (e.g. 'Ce_M45_edge_sample1').
+        The .txt extension is added automatically if not present.
+    data_dir : str
+        Data directory to search for the original file.
+
+    Returns
+    -------
+    str : Path to the newly created copy.
+    """
+    import shutil
+    src_path = scan_filepath(scan_id, data_dir)
+    out_dir = ensure_export_dir("renamed")
+
+    # Sanitize the new name: replace spaces with underscores, remove unsafe chars
+    safe_name = re.sub(r'[^\w\-.]', '_', new_name.strip())
+    if not safe_name.lower().endswith(".txt"):
+        safe_name += ".txt"
+
+    dst_path = os.path.join(out_dir, safe_name)
+
+    # Avoid overwriting existing files
+    if os.path.exists(dst_path):
+        base, ext = os.path.splitext(safe_name)
+        counter = 1
+        while os.path.exists(dst_path):
+            dst_path = os.path.join(out_dir, f"{base}_{counter}{ext}")
+            counter += 1
+
+    shutil.copy2(src_path, dst_path)
+    return dst_path
 
 
 def export_data(
