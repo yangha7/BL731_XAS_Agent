@@ -925,6 +925,30 @@ HTML_TEMPLATE = r"""
     border-radius: 4px;
   }
   #sidebar-header button:hover { background: #3c3c3c; color: #ccc; }
+
+  /* ── Quick-links panel ───────────────────────────────────────────── */
+  #quick-links {
+    padding: 8px 14px;
+    border-bottom: 1px solid #333;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  #quick-links a {
+    color: #4fc3f7;
+    text-decoration: none;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    background: #1e1e1e;
+    transition: background 0.15s;
+  }
+  #quick-links a:hover { background: #333; color: #81d4fa; }
+  #quick-links a .link-icon { font-size: 14px; }
+
   #file-tree {
     flex: 1;
     overflow-y: auto;
@@ -1085,6 +1109,11 @@ HTML_TEMPLATE = r"""
       <div id="sidebar-header">
         <span>📁 Data Explorer</span>
         <button id="refresh-tree" title="Refresh file list">⟳</button>
+      </div>
+      <div id="quick-links">
+        <a href="https://xdb.lbl.gov/" target="_blank" rel="noopener noreferrer" title="X-Ray Data Booklet (opens in new window)">
+          <span class="link-icon">📘</span> X-Ray Data Booklet
+        </a>
       </div>
       <div id="file-tree"></div>
     </div>
@@ -1320,27 +1349,29 @@ async function loadFileTree() {
     const data = await resp.json();
     fileTree.innerHTML = "";
 
-    // Root folder (auto-expanded)
-    const rootItem = document.createElement("div");
-    rootItem.className = "tree-item";
-    rootItem.style.paddingLeft = "8px";
-    rootItem.innerHTML =
-      '<span class="icon">▼</span>' +
-      '<span class="label" style="font-weight:600;">📁 ' + data.root + '</span>';
+    // Render each root directory (731_Data, exported_data, etc.)
+    data.trees.forEach(rootNode => {
+      const rootItem = document.createElement("div");
+      rootItem.className = "tree-item";
+      rootItem.style.paddingLeft = "8px";
+      rootItem.innerHTML =
+        '<span class="icon">▼</span>' +
+        '<span class="label" style="font-weight:600;">📁 ' + rootNode.name + '</span>';
 
-    const rootChildren = document.createElement("div");
-    rootChildren.className = "tree-children open";
-    data.children.forEach(child => {
-      rootChildren.appendChild(createTreeItem(child, 1));
+      const rootChildren = document.createElement("div");
+      rootChildren.className = "tree-children open";
+      (rootNode.children || []).forEach(child => {
+        rootChildren.appendChild(createTreeItem(child, 1));
+      });
+
+      rootItem.addEventListener("click", () => {
+        const isOpen = rootChildren.classList.toggle("open");
+        rootItem.querySelector(".icon").textContent = isOpen ? "▼" : "▶";
+      });
+
+      fileTree.appendChild(rootItem);
+      fileTree.appendChild(rootChildren);
     });
-
-    rootItem.addEventListener("click", () => {
-      const isOpen = rootChildren.classList.toggle("open");
-      rootItem.querySelector(".icon").textContent = isOpen ? "▼" : "▶";
-    });
-
-    fileTree.appendChild(rootItem);
-    fileTree.appendChild(rootChildren);
   } catch (err) {
     fileTree.innerHTML = '<div style="padding:12px;color:#f44;font-size:12px;">Failed to load files</div>';
   }
@@ -1431,8 +1462,14 @@ def list_data_files():
             entries.append({"name": f, "type": "file"})
         return entries
 
-    tree = _build_tree(DATA_DIR)
-    return jsonify({"root": os.path.basename(DATA_DIR), "children": tree})
+    trees = [{"name": os.path.basename(DATA_DIR), "type": "dir",
+              "children": _build_tree(DATA_DIR)}]
+    # Include exported_data directory if it exists
+    export_dir = os.path.join(os.path.dirname(__file__) or ".", "exported_data")
+    if os.path.isdir(export_dir):
+        trees.append({"name": "exported_data", "type": "dir",
+                       "children": _build_tree(export_dir)})
+    return jsonify({"trees": trees})
 
 
 if __name__ == "__main__":
