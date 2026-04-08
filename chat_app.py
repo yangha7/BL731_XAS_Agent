@@ -164,13 +164,15 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "plot_scan",
-            "description": "Plot a single XAS scan. Plots the specified signal (TEY, TFY, or MCP) vs Mono Energy in eV. Optionally normalize by I0.",
+            "description": "Plot a single XAS scan. Plots the specified signal (TEY, TFY, or MCP) vs Mono Energy in eV. Optionally normalize by I0. Use e_min/e_max to zoom into a specific energy range.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "scan_id": {"type": "string", "description": "Scan identifier, e.g. 'SigScan45611' or '45611'."},
                     "signal": {"type": "string", "enum": ["TEY", "TFY", "MCP"], "description": "Signal channel to plot."},
                     "normalize": {"type": "boolean", "description": "If true, divide signal by I0. Default false."},
+                    "e_min": {"type": "number", "description": "Minimum energy in eV for the plot range (zoom). Optional."},
+                    "e_max": {"type": "number", "description": "Maximum energy in eV for the plot range (zoom). Optional."},
                 },
                 "required": ["scan_id", "signal"],
             },
@@ -180,15 +182,20 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "compare_scans",
-            "description": "Overlay multiple XAS scans on one plot for comparison.",
+            "description": "Overlay multiple XAS scans on one plot for comparison. Supports energy range zoom, vertical offset/scale, and dual-axis mode for plotting two different signals (e.g. TEY on left axis, MCP on right axis).",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "scan_ids": {"type": "array", "items": {"type": "string"}, "description": "List of scan identifiers."},
-                    "signal": {"type": "string", "enum": ["TEY", "TFY", "MCP"], "description": "Signal channel."},
+                    "signal": {"type": "string", "enum": ["TEY", "TFY", "MCP"], "description": "Signal channel (used when plotting one signal for all scans)."},
+                    "signals": {"type": "array", "items": {"type": "string", "enum": ["TEY", "TFY", "MCP"]}, "description": "Two signal channels for dual-axis mode, e.g. ['TEY', 'MCP']. First signal on left axis, second on right axis. Use this instead of 'signal' for dual-axis."},
                     "normalize": {"type": "boolean", "description": "If true, divide by I0. Default false."},
+                    "e_min": {"type": "number", "description": "Minimum energy in eV for the plot range (zoom). Optional."},
+                    "e_max": {"type": "number", "description": "Maximum energy in eV for the plot range (zoom). Optional."},
+                    "offset": {"type": "number", "description": "Vertical offset between curves when comparing multiple scans. Each successive scan is shifted up by this amount. Default 0."},
+                    "scale": {"type": "number", "description": "Multiply all signal values by this factor. Default 1.0."},
                 },
-                "required": ["scan_ids", "signal"],
+                "required": ["scan_ids"],
             },
         },
     },
@@ -351,7 +358,8 @@ def tool_list_scans(date: str = None, **kw) -> str:
     return header + "\n" + "\n".join(ids)
 
 
-def tool_plot_scan(scan_id: str, signal: str, normalize: bool = False, **kw) -> str:
+def tool_plot_scan(scan_id: str, signal: str, normalize: bool = False,
+                   e_min: float = None, e_max: float = None, **kw) -> str:
     global _last_plot
     try:
         sid, meta, df = _load(scan_id)
@@ -366,20 +374,51 @@ def tool_plot_scan(scan_id: str, signal: str, normalize: bool = False, **kw) -> 
         signal_data = xu.get_signal(df, signal)
         ylabel = signal
 
+    # Apply energy range filter (zoom)
+    mask = np.ones(len(energy), dtype=bool)
+    if e_min is not None:
+        mask &= energy >= e_min
+    if e_max is not None:
+        mask &= energy <= e_max
+    energy_plot = energy[mask]
+    signal_plot = signal_data[mask]
+
+    if len(energy_plot) == 0:
+        return (f"Error: No data points in energy range "
+                f"{e_min or ''}–{e_max or ''} eV for {sid}. "
+                f"Full range is {energy.min():.2f}–{energy.max():.2f} eV.")
+
     fig, ax = plt.subplots()
-    ax.plot(energy, signal_data, "b-", linewidth=1.2)
+    ax.plot(energy_plot, signal_plot, "b-", linewidth=1.2)
     ax.set_xlabel("Mono Energy (eV)")
     ax.set_ylabel(ylabel)
-    ax.set_title(f"{sid}  —  {meta['scan_type']}  ({meta['date']})")
+    title = f"{sid}  —  {meta['scan_type']}  ({meta['date']})"
+    if e_min is not None or e_max is not None:
+        title += f"  [{e_min or energy.min():.1f}–{e_max or energy.max():.1f} eV]"
+    ax.set_title(title)
     plt.tight_layout()
 
     _pending_images.append(_fig_to_base64(fig))
-    _last_plot = {"energy": energy, "signal": signal_data, "signal_name": ylabel, "scan_id": sid}
-    return f"Plotted {ylabel} for {sid}. Energy: {energy.min():.2f}–{energy.max():.2f} eV, {len(energy)} pts."
+    _last_plot = {"energy": energy_plot, "signal": signal_plot, "signal_name": ylabel, "scan_id": sid}
+    range_info = f"{energy_plot.min():.2f}–{energy_plot.max():.2f} eV, {len(energy_plot)} pts"
+    return f"Plotted {ylabel} for {sid}. Energy: {range_info}."
 
 
-def tool_compare_scans(scan_ids: list, signal: str, normalize: bool = False, **kw) -> str:
+def tool_compare_scans(scan_ids: list, signal: str = None, signals: list = None,
+                       normalize: bool = False, e_min: float = None, e_max: float = None,
+                       offset: float = 0, scale: float = 1.0, **kw) -> str:
     global _last_plot
+
+    # Determine signal mode: single signal or dual-axis
+    dual_axis = False
+    if signals and len(signals) == 2:
+        dual_axis = True
+        sig_left, sig_right = signals[0], signals[1]
+    elif signals and len(signals) == 1:
+        signal = signals[0]
+    elif not signal and not signals:
+        return "Error: Please specify 'signal' (e.g. 'TEY') or 'signals' (e.g. ['TEY', 'MCP']) for dual-axis."
+
     loaded = []
     for raw in scan_ids:
         try:
@@ -387,33 +426,111 @@ def tool_compare_scans(scan_ids: list, signal: str, normalize: bool = False, **k
         except FileNotFoundError as e:
             return str(e)
 
-    fig, ax = plt.subplots()
-    for sid, meta, df in loaded:
-        energy = xu.get_energy(df)
-        if normalize:
-            sig_data = xu.normalize_by_i0(df, signal)
-            ylabel = f"{signal} / I0"
-        else:
-            sig_data = xu.get_signal(df, signal)
-            ylabel = signal
-        ax.plot(energy, sig_data, linewidth=1.0, label=sid)
+    fig, ax_left = plt.subplots()
+    ax_right = ax_left.twinx() if dual_axis else None
 
-    ax.set_xlabel("Mono Energy (eV)")
-    ax.set_ylabel(ylabel)
-    ax.set_title(f"Comparison — {ylabel}")
-    ax.legend(fontsize=9, ncol=2)
+    # Color cycles for dual-axis mode
+    colors_left = plt.cm.tab10.colors
+    colors_right = plt.cm.Set2.colors
+
+    # Pre-compute ylabel for single-signal mode (avoids UnboundLocalError if all points filtered)
+    if not dual_axis:
+        ylabel = f"{signal} / I0" if normalize else signal
+
+    for i, (sid, meta, df) in enumerate(loaded):
+        energy = xu.get_energy(df)
+
+        # Apply energy range filter
+        mask = np.ones(len(energy), dtype=bool)
+        if e_min is not None:
+            mask &= energy >= e_min
+        if e_max is not None:
+            mask &= energy <= e_max
+        energy_f = energy[mask]
+
+        if len(energy_f) == 0:
+            continue
+
+        v_offset = offset * i  # cumulative offset for each scan
+
+        if dual_axis:
+            # Left axis signal
+            if normalize:
+                data_l = xu.normalize_by_i0(df, sig_left)[mask] * scale + v_offset
+                lbl_l = f"{sig_left}/I0"
+            else:
+                data_l = xu.get_signal(df, sig_left)[mask] * scale + v_offset
+                lbl_l = sig_left
+            ax_left.plot(energy_f, data_l, linewidth=1.0, label=f"{sid} {sig_left}",
+                         color=colors_left[i % len(colors_left)])
+
+            # Right axis signal
+            if normalize:
+                data_r = xu.normalize_by_i0(df, sig_right)[mask] * scale + v_offset
+                lbl_r = f"{sig_right}/I0"
+            else:
+                data_r = xu.get_signal(df, sig_right)[mask] * scale + v_offset
+                lbl_r = sig_right
+            ax_right.plot(energy_f, data_r, linewidth=1.0, label=f"{sid} {sig_right}",
+                          color=colors_right[i % len(colors_right)], linestyle="--")
+        else:
+            # Single signal mode
+            if normalize:
+                sig_data = xu.normalize_by_i0(df, signal)[mask] * scale + v_offset
+                ylabel = f"{signal} / I0"
+            else:
+                sig_data = xu.get_signal(df, signal)[mask] * scale + v_offset
+                ylabel = signal
+            ax_left.plot(energy_f, sig_data, linewidth=1.0, label=sid,
+                         color=colors_left[i % len(colors_left)])
+
+    ax_left.set_xlabel("Mono Energy (eV)")
+
+    if dual_axis:
+        ax_left.set_ylabel(f"{sig_left}{' / I0' if normalize else ''}", color=colors_left[0])
+        ax_right.set_ylabel(f"{sig_right}{' / I0' if normalize else ''}", color=colors_right[0])
+        ax_left.tick_params(axis="y", labelcolor=colors_left[0])
+        ax_right.tick_params(axis="y", labelcolor=colors_right[0])
+        title = f"Comparison — {sig_left} (left) vs {sig_right} (right)"
+        # Combine legends from both axes
+        lines_l, labels_l = ax_left.get_legend_handles_labels()
+        lines_r, labels_r = ax_right.get_legend_handles_labels()
+        ax_left.legend(lines_l + lines_r, labels_l + labels_r, fontsize=8, ncol=2, loc="best")
+    else:
+        ax_left.set_ylabel(ylabel)
+        title = f"Comparison — {ylabel}"
+        ax_left.legend(fontsize=9, ncol=2)
+
+    if e_min is not None or e_max is not None:
+        title += f"  [{e_min or ''}–{e_max or ''} eV]"
+    if offset:
+        title += f"  (offset={offset})"
+    if scale != 1.0:
+        title += f"  (×{scale})"
+    ax_left.set_title(title)
     plt.tight_layout()
 
     _pending_images.append(_fig_to_base64(fig))
 
     first_sid, _, df0 = loaded[0]
+    first_sig = sig_left if dual_axis else signal
     _last_plot = {
         "energy": xu.get_energy(df0),
-        "signal": xu.normalize_by_i0(df0, signal) if normalize else xu.get_signal(df0, signal),
-        "signal_name": ylabel,
+        "signal": xu.normalize_by_i0(df0, first_sig) if normalize else xu.get_signal(df0, first_sig),
+        "signal_name": first_sig,
         "scan_id": "_".join(s for s, _, _ in loaded),
     }
-    return f"Compared {len(loaded)} scans: {', '.join(s for s, _, _ in loaded)}."
+
+    parts = [f"Compared {len(loaded)} scans: {', '.join(s for s, _, _ in loaded)}."]
+    if dual_axis:
+        parts.append(f"Left axis: {sig_left}, Right axis: {sig_right}.")
+    if e_min is not None or e_max is not None:
+        parts.append(f"Energy range: {e_min or 'start'}–{e_max or 'end'} eV.")
+    if offset:
+        parts.append(f"Vertical offset: {offset} per scan.")
+    if scale != 1.0:
+        parts.append(f"Scale factor: {scale}×.")
+    return " ".join(parts)
 
 
 def tool_save_data(filename: str = None, **kw) -> str:
@@ -773,8 +890,13 @@ Energy column: Mono Energy in eV
 
 Available tools:
 - list_scans: List scan files. Accepts an optional date filter (e.g. '260401', '2026-04-01', 'today', 'this_week', or a range '260401-260403'). Defaults to the past week. Use 'all' to list everything.
-- plot_scan: Plot a single scan (raw or divided by I0)
-- compare_scans: Overlay multiple scans on one plot
+- plot_scan: Plot a single scan (raw or divided by I0). Supports e_min/e_max to zoom into a specific energy range.
+- compare_scans: Overlay multiple scans on one plot. Supports:
+    * e_min/e_max: zoom into a specific energy range
+    * offset: vertical offset between curves (each successive scan shifted up)
+    * scale: multiply all signal values by a factor
+    * signals: dual-axis mode — pass two signals like ['TEY', 'MCP'] to plot the first on the left axis and the second on the right axis
+    * When using dual-axis, use 'signals' parameter (array of 2) instead of 'signal' (single string)
 - show_scan_info: Show metadata for a scan
 - normalize_scan: Athena-style XAS normalization
 - derivative_scan: Compute smoothed 1st or 2nd derivative
@@ -787,6 +909,10 @@ Rules:
 - The user may refer to scans by full ID (SigScan45611) or just the number (45611)
 - Scans are found automatically regardless of which subdirectory they are in
 - When the user says "plot" or "show", use plot_scan or compare_scans
+- When the user asks to "zoom in" or specifies an energy range (e.g. "plot from 520 to 560 eV"), use e_min/e_max parameters
+- When the user asks to plot two different signals (e.g. "plot TEY and MCP"), use compare_scans with signals=['TEY', 'MCP'] for dual-axis
+- When the user asks to "offset" or "stack" curves, use the offset parameter in compare_scans
+- When the user asks to "scale" or "multiply" signals, use the scale parameter in compare_scans
 - When the user says "normalize", use normalize_scan
 - When the user says "derivative", "1st derivative", "2nd derivative", or "d/dE", use derivative_scan
 - When the user says "find peaks", "detect peaks", or "peak detection", use find_peaks_scan
