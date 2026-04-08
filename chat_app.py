@@ -780,8 +780,8 @@ Available tools:
 - derivative_scan: Compute smoothed 1st or 2nd derivative
 - find_peaks_scan: Detect peaks and shoulders with tunable sensitivity
 - identify_edge: Identify element and absorption edge from peak energies and metadata
-- save_data: Save the last plotted data to a text file
-- rename_scan: Copy a scan file with a descriptive name to exported_data/renamed/ (original raw data is never modified)
+- save_data: Export the last plotted/processed data (energy + signal columns only) to a text file
+- rename_scan: Duplicate a complete raw scan file with a descriptive name to exported_data/renamed/ (full raw data copy, original is never modified)
 
 Rules:
 - The user may refer to scans by full ID (SigScan45611) or just the number (45611)
@@ -792,8 +792,10 @@ Rules:
 - When the user says "find peaks", "detect peaks", or "peak detection", use find_peaks_scan
 - When the user says "find more peaks" or "more features", use find_peaks_scan with higher sensitivity
 - When the user asks "what element" or "what edge" or "identify", use identify_edge
-- When the user says "save" or "export", use save_data
-- When the user says "rename", "copy as", or "save as", use rename_scan to create a named copy
+- When the user says "save" or "export" the plotted/processed data, use save_data (exports only energy + signal columns)
+- When the user says "rename", "copy as", "save as", or "duplicate", use rename_scan to create a full raw data copy with a descriptive name
+- rename_scan and save_data are different: rename_scan copies the entire raw file; save_data exports only the last plotted data
+- Do NOT call both rename_scan and save_data for the same request — choose the appropriate one
 - When the user asks to "list" scans, use list_scans with an appropriate date filter
 - If the user asks to list scans without specifying a date, default to the past week
 - If the user mentions a specific date like "April 1st" or "yesterday", convert it to the appropriate date filter
