@@ -545,6 +545,8 @@ TOOLS = [
                 "type": "object",
                 "properties": {
                     "filepath": {"type": "string", "description": "Path to the file, relative to the workspace. Can be in exported_data/ or elsewhere."},
+                    "e_min": {"type": "number", "description": "Minimum X value for the plot range (zoom). Optional."},
+                    "e_max": {"type": "number", "description": "Maximum X value for the plot range (zoom). Optional."},
                     "title": {"type": "string", "description": "Custom plot title. Default: filename."},
                     "color": {"type": "string", "description": "Line color. Default: blue."},
                     "linestyle": {"type": "string", "enum": ["-", "--", "-.", ":"], "description": "Line style. Default: solid."},
@@ -599,6 +601,8 @@ TOOLS = [
                         "description": "List of file paths to plot, relative to the workspace (e.g. ['exported_data/RuCl3_Powder_TEY_I0.txt', 'exported_data/RuO2_Powder_TEY_I0.txt']).",
                     },
                     "title": {"type": "string", "description": "Custom plot title."},
+                    "e_min": {"type": "number", "description": "Minimum X value for the plot range (zoom). Optional."},
+                    "e_max": {"type": "number", "description": "Maximum X value for the plot range (zoom). Optional."},
                     "offset": {"type": "number", "description": "Vertical offset between curves. Default 0. Ignored when auto_scale is set."},
                     "scale": {"type": "number", "description": "Multiply all Y values by this factor. Default 1.0. Ignored when auto_scale is set."},
                     "auto_scale": {"type": "string", "enum": ["overlay", "offset"], "description": "Auto-scale mode. 'overlay': normalize each file to [0,1] and overlay (no offset). 'offset': normalize to [0,1] and stack with vertical offsets. Default: not set."},
@@ -1492,7 +1496,8 @@ def tool_calibrate_scans(scan_ids: list = None, date: str = None, **kw) -> str:
     return "\n".join(parts)
 
 
-def tool_plot_file(filepath: str, title: str = None, color: str = "blue",
+def tool_plot_file(filepath: str, e_min: float = None, e_max: float = None,
+                   title: str = None, color: str = "blue",
                    linestyle: str = "-", linewidth: float = 1.2,
                    label: str = None, axis_style: dict = None, **kw) -> str:
     """Plot a generic two-column data file."""
@@ -1510,6 +1515,15 @@ def tool_plot_file(filepath: str, title: str = None, color: str = "blue",
     except Exception as e:
         return f"Error loading file: {e}"
 
+    # Apply X range filter
+    mask = np.ones(len(x_data), dtype=bool)
+    if e_min is not None:
+        mask &= x_data >= e_min
+    if e_max is not None:
+        mask &= x_data <= e_max
+    x_data = x_data[mask]
+    y_data = y_data[mask]
+
     legend_label = label if label else fname
 
     fig, ax = plt.subplots()
@@ -1518,6 +1532,8 @@ def tool_plot_file(filepath: str, title: str = None, color: str = "blue",
     ax.set_xlabel(x_label)
     ax.set_ylabel(y_label)
     plot_title = title if title else fname
+    if not title and (e_min is not None or e_max is not None):
+        plot_title += f"  [{e_min or ''}–{e_max or ''}]"
     ax.set_title(plot_title)
     ax.legend(fontsize=9)
     _apply_axis_style(ax, axis_style)
@@ -1568,6 +1584,7 @@ def tool_list_exports(**kw) -> str:
 
 
 def tool_compare_files(filepaths: list, title: str = None,
+                       e_min: float = None, e_max: float = None,
                        offset: float = 0, scale: float = 1.0,
                        auto_scale: str = None,
                        labels: list = None, styles: list = None,
@@ -1591,6 +1608,9 @@ def tool_compare_files(filepaths: list, title: str = None,
     colors = list(plt.cm.tab10.colors)
     fig, ax = plt.subplots()
     loaded_names = []
+    # Track axis labels from first file (use actual column names)
+    first_x_label = None
+    first_y_label = None
 
     for i, fp_raw in enumerate(filepaths):
         # Resolve path relative to workspace
@@ -1605,7 +1625,24 @@ def tool_compare_files(filepaths: list, title: str = None,
         except Exception as e:
             return f"Error loading {fp_raw}: {e}"
 
+        # Remember first file's axis labels
+        if first_x_label is None:
+            first_x_label = x_label
+            first_y_label = y_label
+
         loaded_names.append(fname)
+
+        # Apply energy/X range filter
+        mask = np.ones(len(x_data), dtype=bool)
+        if e_min is not None:
+            mask &= x_data >= e_min
+        if e_max is not None:
+            mask &= x_data <= e_max
+        x_f = x_data[mask]
+        y_f = y_data[mask]
+
+        if len(x_f) == 0:
+            continue
 
         # Compute vertical offset
         if auto_scale == "offset":
@@ -1617,28 +1654,30 @@ def tool_compare_files(filepaths: list, title: str = None,
 
         # Apply scaling / normalization
         if auto_scale:
-            dmin, dmax = y_data.min(), y_data.max()
-            y_plot = (y_data - dmin) / (dmax - dmin + 1e-30) + v_offset
+            dmin, dmax = y_f.min(), y_f.max()
+            y_plot = (y_f - dmin) / (dmax - dmin + 1e-30) + v_offset
         else:
-            y_plot = y_data * scale + v_offset
+            y_plot = y_f * scale + v_offset
 
         # Style
         sty = _get_style(styles, i, {
             "color": colors[i % len(colors)],
             "linestyle": "-", "linewidth": 1.2})
         lbl = labels[i] if labels and i < len(labels) else fname
-        ax.plot(x_data, y_plot, label=lbl, **sty)
+        ax.plot(x_f, y_plot, label=lbl, **sty)
 
-    ax.set_xlabel(x_label if len(filepaths) == 1 else "X")
+    ax.set_xlabel(first_x_label or "X")
     if auto_scale:
-        ax.set_ylabel("Intensity (normalized)")
+        ax.set_ylabel(f"{first_y_label or 'Intensity'} (normalized)")
     else:
-        ax.set_ylabel(y_label if len(filepaths) == 1 else "Y")
+        ax.set_ylabel(first_y_label or "Y")
     # Title
     if not title:
         auto_title = f"Comparison — {len(loaded_names)} files"
         if auto_scale:
             auto_title += f"  [auto-scaled: {auto_scale}]"
+        if e_min is not None or e_max is not None:
+            auto_title += f"  [{e_min or ''}–{e_max or ''}]"
         if offset and not auto_scale:
             auto_title += f"  (offset={offset})"
         if scale != 1.0 and not auto_scale:
@@ -1665,6 +1704,8 @@ def tool_compare_files(filepaths: list, title: str = None,
         parts.append("Auto-scaled (overlay): each file normalized to [0,1] and overlaid for shape comparison.")
     elif auto_scale == "offset":
         parts.append("Auto-scaled (offset): each file normalized to [0,1] and stacked with uniform vertical offsets.")
+    if e_min is not None or e_max is not None:
+        parts.append(f"X range: {e_min or 'start'}–{e_max or 'end'}.")
     if offset and not auto_scale:
         parts.append(f"Vertical offset: {offset} per file.")
     if scale != 1.0 and not auto_scale:
