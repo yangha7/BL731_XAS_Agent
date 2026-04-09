@@ -4,7 +4,7 @@ An interactive AI-powered assistant for X-ray Absorption Spectroscopy (XAS) data
 
 ## Overview
 
-This project provides a conversational chat interface where users can explore, visualize, and analyze XAS scan data collected at a synchrotron beamline. The agent understands natural language requests and uses a suite of analysis tools to process rare-earth M4,5-edge (and other) XAS spectra.
+This project provides a conversational chat interface where users can explore, visualize, and analyze XAS scan data collected at a synchrotron beamline. The agent understands natural language requests and uses a suite of analysis tools to process soft XAS spectra at Bl731 at ALS. This includes C, N, O K-edge, 3d transition metal L-edge, and the rare earth elements M4,5 edge.
 
 ## Project Structure
 
