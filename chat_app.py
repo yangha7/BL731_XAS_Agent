@@ -126,6 +126,18 @@ _last_plot = {}
 _cache = {}
 _pending_images = []  # collect base64 plot images during tool calls
 
+# ── Energy calibration state ──────────────────────────────────────────────────
+_calibration = {"enabled": False, "raw_eV": 0.0, "cal_eV": 0.0}
+
+
+def _get_energy(df):
+    """Return energy array, applying calibration shift if enabled."""
+    energy = xu.get_energy(df)
+    if _calibration["enabled"]:
+        shift = _calibration["cal_eV"] - _calibration["raw_eV"]
+        energy = energy + shift
+    return energy
+
 
 def _load(scan_id: str) -> tuple:
     sid = xu.resolve_scan_id(scan_id)
@@ -383,7 +395,7 @@ def tool_plot_scan(scan_id: str, signal: str, normalize: bool = False,
     except FileNotFoundError as e:
         return str(e)
 
-    energy = xu.get_energy(df)
+    energy = _get_energy(df)
     if normalize:
         signal_data = xu.normalize_by_i0(df, signal)
         ylabel = f"{signal} / I0"
@@ -474,7 +486,7 @@ def tool_compare_scans(scan_ids: list, signal: str = None, signals: list = None,
     style_idx = 0
 
     for i, (sid, meta, df) in enumerate(loaded):
-        energy = xu.get_energy(df)
+        energy = _get_energy(df)
 
         # Apply energy range filter
         mask = np.ones(len(energy), dtype=bool)
@@ -553,7 +565,7 @@ def tool_compare_scans(scan_ids: list, signal: str = None, signals: list = None,
     first_sid, _, df0 = loaded[0]
     first_sig = sig_left if dual_axis else signal
     _last_plot = {
-        "energy": xu.get_energy(df0),
+        "energy": _get_energy(df0),
         "signal": xu.normalize_by_i0(df0, first_sig) if normalize else xu.get_signal(df0, first_sig),
         "signal_name": first_sig,
         "scan_id": "_".join(s for s, _, _ in loaded),
@@ -592,7 +604,7 @@ def _format_scan_info(scan_id: str) -> str:
         return f"Scan {scan_id}: {e}"
     except Exception as e:
         return f"Scan {scan_id}: Error – {e}"
-    energy = xu.get_energy(df)
+    energy = _get_energy(df)
     signals = xu.list_available_signals(df)
     lines = [
         f"Scan: {sid}",
@@ -641,7 +653,7 @@ def tool_normalize_scan(scan_id: str, signal: str, e0: float = None, flatten: bo
     except FileNotFoundError as e:
         return str(e)
 
-    energy = xu.get_energy(df)
+    energy = _get_energy(df)
     mu = xu.normalize_by_i0(df, signal)
 
     result = xu.pre_edge_subtraction(energy, mu, e0=e0)
@@ -693,7 +705,7 @@ def tool_derivative_scan(scan_id: str, signal: str, order: int = 1, smooth_windo
     except FileNotFoundError as e:
         return str(e)
 
-    energy = xu.get_energy(df)
+    energy = _get_energy(df)
     mu = xu.normalize_by_i0(df, signal)
 
     deriv = xu.smooth_derivative(energy, mu, order=order, window=smooth_window)
@@ -772,7 +784,7 @@ def tool_find_peaks_scan(scan_id: str, signal: str, sensitivity: str = "normal",
     except FileNotFoundError as e:
         return str(e)
 
-    energy = xu.get_energy(df)
+    energy = _get_energy(df)
     mu = xu.normalize_by_i0(df, signal)
 
     result = xu.detect_peaks(energy, mu, sensitivity=sensitivity)
@@ -825,7 +837,7 @@ def tool_identify_edge(scan_id: str, signal: str, **kw) -> str:
     except FileNotFoundError as e:
         return str(e)
 
-    energy = xu.get_energy(df)
+    energy = _get_energy(df)
     mu = xu.normalize_by_i0(df, signal)
 
     # Find E0
@@ -1123,6 +1135,78 @@ HTML_TEMPLATE = r"""
     padding: 4px 0;
     font-size: 13px;
   }
+
+  /* ── Calibration panel ───────────────────────────────────────────── */
+  #cal-panel {
+    border-top: 1px solid #333;
+    padding: 10px 14px;
+    flex-shrink: 0;
+    background: #1e1e1e;
+  }
+  #cal-panel .cal-title {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: #888;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  #cal-panel .cal-title button {
+    background: none;
+    border: none;
+    color: #888;
+    cursor: pointer;
+    font-size: 14px;
+    padding: 2px 6px;
+    border-radius: 4px;
+  }
+  #cal-panel .cal-title button:hover { background: #3c3c3c; color: #ccc; }
+  #cal-panel .cal-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+    font-size: 12px;
+  }
+  #cal-panel .cal-row label {
+    width: 70px;
+    color: #aaa;
+    flex-shrink: 0;
+  }
+  #cal-panel .cal-row input[type="number"] {
+    flex: 1;
+    padding: 4px 6px;
+    border: 1px solid #444;
+    border-radius: 4px;
+    background: #2d2d2d;
+    color: #ccc;
+    font-size: 12px;
+    outline: none;
+    min-width: 0;
+  }
+  #cal-panel .cal-row input[type="number"]:focus {
+    border-color: #007acc;
+  }
+  #cal-panel .cal-check {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: #aaa;
+    margin-top: 4px;
+  }
+  #cal-panel .cal-check input[type="checkbox"] {
+    accent-color: #007acc;
+  }
+  #cal-panel .cal-shift {
+    font-size: 11px;
+    color: #666;
+    margin-top: 4px;
+    font-style: italic;
+  }
   #file-tree::-webkit-scrollbar { width: 8px; }
   #file-tree::-webkit-scrollbar-track { background: #252526; }
   #file-tree::-webkit-scrollbar-thumb { background: #424242; border-radius: 4px; }
@@ -1284,6 +1368,27 @@ HTML_TEMPLATE = r"""
         </a>
       </div>
       <div id="file-tree"></div>
+
+      <!-- ── Calibration panel ──────────────────────────────────────────── -->
+      <div id="cal-panel">
+        <div class="cal-title">
+          <span>⚡ Energy Calibration</span>
+          <button id="cal-refresh" title="Refresh calibration from server">⟳</button>
+        </div>
+        <div class="cal-row">
+          <label>Raw (eV):</label>
+          <input type="number" id="cal-raw" step="0.01" value="0" />
+        </div>
+        <div class="cal-row">
+          <label>Calib (eV):</label>
+          <input type="number" id="cal-cal" step="0.01" value="0" />
+        </div>
+        <div class="cal-check">
+          <input type="checkbox" id="cal-enabled" />
+          <label for="cal-enabled">Apply calibration</label>
+        </div>
+        <div class="cal-shift" id="cal-shift-display">Shift: 0.00 eV</div>
+      </div>
     </div>
 
     <div id="resize-handle"></div>
@@ -1577,6 +1682,68 @@ document.addEventListener("mouseup", () => {
 
 // Load file tree on startup
 loadFileTree();
+
+// ── Calibration panel ─────────────────────────────────────────────────────
+const calRaw = document.getElementById("cal-raw");
+const calCal = document.getElementById("cal-cal");
+const calEnabled = document.getElementById("cal-enabled");
+const calShiftDisplay = document.getElementById("cal-shift-display");
+const calRefreshBtn = document.getElementById("cal-refresh");
+
+function updateShiftDisplay() {
+  const raw = parseFloat(calRaw.value) || 0;
+  const cal = parseFloat(calCal.value) || 0;
+  const shift = cal - raw;
+  const sign = shift >= 0 ? "+" : "";
+  calShiftDisplay.textContent = calEnabled.checked
+    ? `Shift: ${sign}${shift.toFixed(2)} eV (active)`
+    : `Shift: ${sign}${shift.toFixed(2)} eV (inactive)`;
+  calShiftDisplay.style.color = calEnabled.checked ? "#4fc3f7" : "#666";
+}
+
+async function sendCalibration() {
+  const payload = {
+    enabled: calEnabled.checked,
+    raw_eV: parseFloat(calRaw.value) || 0,
+    cal_eV: parseFloat(calCal.value) || 0,
+  };
+  try {
+    await fetch("/api/calibration", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload),
+    });
+  } catch (e) {
+    console.error("Calibration update failed:", e);
+  }
+  updateShiftDisplay();
+}
+
+async function loadCalibration() {
+  try {
+    const resp = await fetch("/api/calibration");
+    const data = await resp.json();
+    calRaw.value = data.calibration.raw_eV;
+    calCal.value = data.calibration.cal_eV;
+    calEnabled.checked = data.calibration.enabled;
+    updateShiftDisplay();
+  } catch (e) {
+    console.error("Failed to load calibration:", e);
+  }
+}
+
+// Send calibration on any change
+calRaw.addEventListener("change", sendCalibration);
+calCal.addEventListener("change", sendCalibration);
+calEnabled.addEventListener("change", sendCalibration);
+calRefreshBtn.addEventListener("click", loadCalibration);
+
+// Update shift display on input (live preview)
+calRaw.addEventListener("input", updateShiftDisplay);
+calCal.addEventListener("input", updateShiftDisplay);
+
+// Load calibration state on startup
+loadCalibration();
 </script>
 </body>
 </html>
@@ -1638,6 +1805,23 @@ def list_data_files():
         trees.append({"name": "exported_data", "type": "dir",
                        "children": _build_tree(export_dir)})
     return jsonify({"trees": trees})
+
+
+@app.route("/api/calibration", methods=["GET", "POST"])
+def calibration_endpoint():
+    """Get or set the energy calibration state."""
+    global _calibration
+    if request.method == "POST":
+        data = request.get_json()
+        _calibration["enabled"] = bool(data.get("enabled", False))
+        _calibration["raw_eV"] = float(data.get("raw_eV", 0.0))
+        _calibration["cal_eV"] = float(data.get("cal_eV", 0.0))
+        shift = _calibration["cal_eV"] - _calibration["raw_eV"]
+        return jsonify({"status": "ok", "calibration": _calibration,
+                        "shift": shift})
+    # GET
+    shift = _calibration["cal_eV"] - _calibration["raw_eV"]
+    return jsonify({"calibration": _calibration, "shift": shift})
 
 
 if __name__ == "__main__":
