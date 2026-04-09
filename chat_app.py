@@ -355,9 +355,9 @@ TOOLS = [
                     "normalize": {"type": "boolean", "description": "If true, divide by I0. Default false."},
                     "e_min": {"type": "number", "description": "Minimum energy in eV for the plot range (zoom). Optional."},
                     "e_max": {"type": "number", "description": "Maximum energy in eV for the plot range (zoom). Optional."},
-                    "offset": {"type": "number", "description": "Vertical offset between curves when comparing multiple scans. Each successive scan is shifted up by this amount. Default 0. Ignored when auto_scale is true."},
-                    "scale": {"type": "number", "description": "Multiply all signal values by this factor. Default 1.0. Ignored when auto_scale is true."},
-                    "auto_scale": {"type": "boolean", "description": "If true, automatically normalize each spectrum to [0,1] range (min-max) and stack them with uniform vertical offsets. This makes spectra with very different intensities directly comparable. Default false."},
+                    "offset": {"type": "number", "description": "Vertical offset between curves when comparing multiple scans. Each successive scan is shifted up by this amount. Default 0. Ignored when auto_scale is set."},
+                    "scale": {"type": "number", "description": "Multiply all signal values by this factor. Default 1.0. Ignored when auto_scale is set."},
+                    "auto_scale": {"type": "string", "enum": ["overlay", "offset"], "description": "Auto-scale mode. 'overlay': normalize each spectrum to [0,1] and overlay them (no vertical offset) for direct shape comparison. 'offset': normalize to [0,1] and stack with uniform vertical offsets. Default: not set (no auto-scaling)."},
                     "styles": {
                         "type": "array",
                         "description": "Per-curve style overrides. Array of objects, one per scan (single-signal) or one per scan×signal (dual-axis: even indices=left axis, odd=right axis). Each object can have: color (string), linestyle (string), linewidth (number). Curves without a style entry use defaults.",
@@ -599,9 +599,9 @@ TOOLS = [
                         "description": "List of file paths to plot, relative to the workspace (e.g. ['exported_data/RuCl3_Powder_TEY_I0.txt', 'exported_data/RuO2_Powder_TEY_I0.txt']).",
                     },
                     "title": {"type": "string", "description": "Custom plot title."},
-                    "offset": {"type": "number", "description": "Vertical offset between curves. Default 0. Ignored when auto_scale is true."},
-                    "scale": {"type": "number", "description": "Multiply all Y values by this factor. Default 1.0. Ignored when auto_scale is true."},
-                    "auto_scale": {"type": "boolean", "description": "If true, normalize each file's data to [0,1] range and stack with uniform offsets. Default false."},
+                    "offset": {"type": "number", "description": "Vertical offset between curves. Default 0. Ignored when auto_scale is set."},
+                    "scale": {"type": "number", "description": "Multiply all Y values by this factor. Default 1.0. Ignored when auto_scale is set."},
+                    "auto_scale": {"type": "string", "enum": ["overlay", "offset"], "description": "Auto-scale mode. 'overlay': normalize each file to [0,1] and overlay (no offset). 'offset': normalize to [0,1] and stack with vertical offsets. Default: not set."},
                     "labels": {
                         "type": "array",
                         "items": {"type": "string"},
@@ -859,10 +859,20 @@ def _get_style(styles: list, index: int, defaults: dict) -> dict:
 def tool_compare_scans(scan_ids: list, signal: str = None, signals: list = None,
                        normalize: bool = False, e_min: float = None, e_max: float = None,
                        offset: float = 0, scale: float = 1.0,
-                       auto_scale: bool = False,
+                       auto_scale: str = None,
                        styles: list = None, labels: list = None,
                        title: str = None, axis_style: dict = None, **kw) -> str:
     global _last_plot, _last_plot_b64
+
+    # Normalize auto_scale parameter: accept bool (backward compat) or string
+    if auto_scale is True:
+        auto_scale = "overlay"  # default mode when just True
+    elif auto_scale is False or auto_scale is None:
+        auto_scale = None
+    elif isinstance(auto_scale, str):
+        auto_scale = auto_scale.strip().lower()
+        if auto_scale not in ("overlay", "offset"):
+            auto_scale = "overlay"  # default to overlay for unrecognized values
 
     # Determine signal mode: single signal or dual-axis
     dual_axis = False
@@ -910,8 +920,10 @@ def tool_compare_scans(scan_ids: list, signal: str = None, signals: list = None,
             continue
 
         # Compute vertical offset
-        if auto_scale:
+        if auto_scale == "offset":
             v_offset = i * 1.1  # uniform gap between normalized [0,1] curves
+        elif auto_scale == "overlay":
+            v_offset = 0  # all curves overlaid at same baseline
         else:
             v_offset = offset * i  # cumulative offset for each scan
 
@@ -1004,7 +1016,7 @@ def tool_compare_scans(scan_ids: list, signal: str = None, signals: list = None,
 
     if not title:
         if auto_scale:
-            auto_title += "  [auto-scaled]"
+            auto_title += f"  [auto-scaled: {auto_scale}]"
         if e_min is not None or e_max is not None:
             auto_title += f"  [{e_min or ''}–{e_max or ''} eV]"
         if offset and not auto_scale:
@@ -1032,8 +1044,10 @@ def tool_compare_scans(scan_ids: list, signal: str = None, signals: list = None,
     parts = [f"Compared {len(loaded)} scans: {', '.join(s for s, _, _ in loaded)}."]
     if dual_axis:
         parts.append(f"Left axis: {sig_left}, Right axis: {sig_right}.")
-    if auto_scale:
-        parts.append("Auto-scaled: each spectrum normalized to [0,1] and stacked with uniform offsets.")
+    if auto_scale == "overlay":
+        parts.append("Auto-scaled (overlay): each spectrum normalized to [0,1] and overlaid for shape comparison.")
+    elif auto_scale == "offset":
+        parts.append("Auto-scaled (offset): each spectrum normalized to [0,1] and stacked with uniform vertical offsets.")
     if e_min is not None or e_max is not None:
         parts.append(f"Energy range: {e_min or 'start'}–{e_max or 'end'} eV.")
     if offset and not auto_scale:
@@ -1555,11 +1569,21 @@ def tool_list_exports(**kw) -> str:
 
 def tool_compare_files(filepaths: list, title: str = None,
                        offset: float = 0, scale: float = 1.0,
-                       auto_scale: bool = False,
+                       auto_scale: str = None,
                        labels: list = None, styles: list = None,
                        axis_style: dict = None, **kw) -> str:
     """Overlay multiple generic two-column data files on a single plot."""
     global _last_plot, _last_plot_b64
+
+    # Normalize auto_scale parameter
+    if auto_scale is True:
+        auto_scale = "overlay"
+    elif auto_scale is False or auto_scale is None:
+        auto_scale = None
+    elif isinstance(auto_scale, str):
+        auto_scale = auto_scale.strip().lower()
+        if auto_scale not in ("overlay", "offset"):
+            auto_scale = "overlay"
 
     if not filepaths or len(filepaths) == 0:
         return "Error: Please provide at least one filepath."
@@ -1584,8 +1608,10 @@ def tool_compare_files(filepaths: list, title: str = None,
         loaded_names.append(fname)
 
         # Compute vertical offset
-        if auto_scale:
+        if auto_scale == "offset":
             v_offset = i * 1.1
+        elif auto_scale == "overlay":
+            v_offset = 0
         else:
             v_offset = offset * i
 
@@ -1612,7 +1638,7 @@ def tool_compare_files(filepaths: list, title: str = None,
     if not title:
         auto_title = f"Comparison — {len(loaded_names)} files"
         if auto_scale:
-            auto_title += "  [auto-scaled]"
+            auto_title += f"  [auto-scaled: {auto_scale}]"
         if offset and not auto_scale:
             auto_title += f"  (offset={offset})"
         if scale != 1.0 and not auto_scale:
@@ -1635,8 +1661,10 @@ def tool_compare_files(filepaths: list, title: str = None,
     _last_plot = {"energy": x0, "signal": y0, "signal_name": yl0, "scan_id": "_".join(loaded_names)}
 
     parts = [f"Compared {len(loaded_names)} files: {', '.join(loaded_names)}."]
-    if auto_scale:
-        parts.append("Auto-scaled: each file normalized to [0,1] and stacked with uniform offsets.")
+    if auto_scale == "overlay":
+        parts.append("Auto-scaled (overlay): each file normalized to [0,1] and overlaid for shape comparison.")
+    elif auto_scale == "offset":
+        parts.append("Auto-scaled (offset): each file normalized to [0,1] and stacked with uniform vertical offsets.")
     if offset and not auto_scale:
         parts.append(f"Vertical offset: {offset} per file.")
     if scale != 1.0 and not auto_scale:
@@ -1683,7 +1711,7 @@ Available tools:
     * e_min/e_max: zoom into a specific energy range
     * offset: vertical offset between curves (each successive scan shifted up)
     * scale: multiply all signal values by a factor
-    * auto_scale: normalize each spectrum to [0,1] range (min-max) and stack with uniform vertical offsets — ideal when spectra have very different intensities
+    * auto_scale: normalize each spectrum to [0,1] range (min-max). Two modes: 'overlay' (default — all curves overlaid at same baseline for shape comparison) or 'offset' (stacked with uniform vertical gaps)
     * signals: dual-axis mode — pass two signals like ['TEY', 'MCP'] to plot the first on the left axis and the second on the right axis
     * When using dual-axis, use 'signals' parameter (array of 2) instead of 'signal' (single string)
 - show_scan_info: Show metadata for a scan
@@ -1706,7 +1734,7 @@ Rules:
 - When the user asks to "zoom in" or specifies an energy range (e.g. "plot from 520 to 560 eV"), use e_min/e_max parameters
 - When the user asks to plot two different signals (e.g. "plot TEY and MCP"), use compare_scans with signals=['TEY', 'MCP'] for dual-axis
 - When the user asks to "offset" or "stack" curves, use the offset parameter in compare_scans
-- When the user asks to "auto scale", "auto-scale", "normalize and stack", or "make them comparable" for multiple spectra with different intensities, use auto_scale=true in compare_scans. This normalizes each spectrum to [0,1] and stacks them with uniform offsets.
+- When the user asks to "auto scale", "auto-scale", "normalize and stack", "normalize and compare", or "make them comparable" for multiple spectra with different intensities, use auto_scale in compare_scans or compare_files. Two modes: auto_scale="overlay" (default — normalize to [0,1] and overlay all curves at same baseline for shape comparison) or auto_scale="offset" (normalize to [0,1] and stack with vertical gaps). If the user just says "auto scale" without specifying, use "overlay".
 - When the user asks to "scale" or "multiply" signals, use the scale parameter in compare_scans
 - When the user asks to change line color, thickness, or style (e.g. "use a red dashed line", "make it thicker", "use dotted lines"), use the color/linestyle/linewidth parameters in plot_scan, or the styles array in compare_scans
 - For compare_scans styles: pass an array of objects like [{{"color":"red","linewidth":2}}, {{"color":"blue","linestyle":"--"}}], one per curve. In dual-axis mode, even indices are left-axis curves, odd indices are right-axis curves.
