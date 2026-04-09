@@ -585,6 +585,63 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "compare_files",
+            "description": "Overlay multiple generic two-column data files on a single plot. Similar to compare_scans but for exported/generic data files (txt, csv, dat). Supports auto_scale, offset, scale, custom labels, styles, and axis styling.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filepaths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of file paths to plot, relative to the workspace (e.g. ['exported_data/RuCl3_Powder_TEY_I0.txt', 'exported_data/RuO2_Powder_TEY_I0.txt']).",
+                    },
+                    "title": {"type": "string", "description": "Custom plot title."},
+                    "offset": {"type": "number", "description": "Vertical offset between curves. Default 0. Ignored when auto_scale is true."},
+                    "scale": {"type": "number", "description": "Multiply all Y values by this factor. Default 1.0. Ignored when auto_scale is true."},
+                    "auto_scale": {"type": "boolean", "description": "If true, normalize each file's data to [0,1] range and stack with uniform offsets. Default false."},
+                    "labels": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Custom legend labels, one per file.",
+                    },
+                    "styles": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "color": {"type": "string"},
+                                "linestyle": {"type": "string", "enum": ["-", "--", "-.", ":"]},
+                                "linewidth": {"type": "number"},
+                            },
+                        },
+                        "description": "Per-file style overrides.",
+                    },
+                    "axis_style": {
+                        "type": "object",
+                        "description": "Customize axis appearance (font_family, title_size, label_size, tick_size, etc.).",
+                        "properties": {
+                            "font_family": {"type": "string"},
+                            "title_size": {"type": "number"},
+                            "title_color": {"type": "string"},
+                            "label_size": {"type": "number"},
+                            "label_color": {"type": "string"},
+                            "x_label_color": {"type": "string"},
+                            "y_label_color": {"type": "string"},
+                            "tick_size": {"type": "number"},
+                            "tick_color": {"type": "string"},
+                            "x_tick_color": {"type": "string"},
+                            "y_tick_color": {"type": "string"},
+                            "legend_size": {"type": "number"},
+                        },
+                    },
+                },
+                "required": ["filepaths"],
+            },
+        },
+    },
 ]
 
 
@@ -1491,9 +1548,100 @@ def tool_list_exports(**kw) -> str:
             for f in flist:
                 lines.append(f"    {f}")
     lines.append("")
-    lines.append("Tip: Use plot_file to plot any of these files, e.g. plot_file('exported_data/RuCl3_Powder_TEY_I0.txt').")
+    lines.append("Tip: Use plot_file to plot a single file, or compare_files to overlay multiple files on one plot.")
     lines.append("SigScan files (renamed/calibrated) can also be used with plot_scan and compare_scans by scan ID.")
     return "\n".join(lines)
+
+
+def tool_compare_files(filepaths: list, title: str = None,
+                       offset: float = 0, scale: float = 1.0,
+                       auto_scale: bool = False,
+                       labels: list = None, styles: list = None,
+                       axis_style: dict = None, **kw) -> str:
+    """Overlay multiple generic two-column data files on a single plot."""
+    global _last_plot, _last_plot_b64
+
+    if not filepaths or len(filepaths) == 0:
+        return "Error: Please provide at least one filepath."
+
+    colors = list(plt.cm.tab10.colors)
+    fig, ax = plt.subplots()
+    loaded_names = []
+
+    for i, fp_raw in enumerate(filepaths):
+        # Resolve path relative to workspace
+        fp = fp_raw
+        if not os.path.isabs(fp):
+            fp = os.path.join(os.path.dirname(__file__), fp)
+        if not os.path.isfile(fp):
+            return f"Error: File not found: {fp_raw}"
+
+        try:
+            x_data, y_data, x_label, y_label, fname = _load_generic_file(fp)
+        except Exception as e:
+            return f"Error loading {fp_raw}: {e}"
+
+        loaded_names.append(fname)
+
+        # Compute vertical offset
+        if auto_scale:
+            v_offset = i * 1.1
+        else:
+            v_offset = offset * i
+
+        # Apply scaling / normalization
+        if auto_scale:
+            dmin, dmax = y_data.min(), y_data.max()
+            y_plot = (y_data - dmin) / (dmax - dmin + 1e-30) + v_offset
+        else:
+            y_plot = y_data * scale + v_offset
+
+        # Style
+        sty = _get_style(styles, i, {
+            "color": colors[i % len(colors)],
+            "linestyle": "-", "linewidth": 1.2})
+        lbl = labels[i] if labels and i < len(labels) else fname
+        ax.plot(x_data, y_plot, label=lbl, **sty)
+
+    ax.set_xlabel(x_label if len(filepaths) == 1 else "X")
+    if auto_scale:
+        ax.set_ylabel("Intensity (normalized)")
+    else:
+        ax.set_ylabel(y_label if len(filepaths) == 1 else "Y")
+    # Title
+    if not title:
+        auto_title = f"Comparison — {len(loaded_names)} files"
+        if auto_scale:
+            auto_title += "  [auto-scaled]"
+        if offset and not auto_scale:
+            auto_title += f"  (offset={offset})"
+        if scale != 1.0 and not auto_scale:
+            auto_title += f"  (×{scale})"
+        title = auto_title
+    ax.set_title(title)
+    ax.legend(fontsize=9, ncol=2)
+    _apply_axis_style(ax, axis_style)
+    plt.tight_layout()
+
+    img_b64 = _fig_to_base64(fig)
+    _pending_images.append(img_b64)
+    _last_plot_b64 = img_b64
+
+    # Store last plot data from first file
+    fp0 = filepaths[0]
+    if not os.path.isabs(fp0):
+        fp0 = os.path.join(os.path.dirname(__file__), fp0)
+    x0, y0, _, yl0, fn0 = _load_generic_file(fp0)
+    _last_plot = {"energy": x0, "signal": y0, "signal_name": yl0, "scan_id": "_".join(loaded_names)}
+
+    parts = [f"Compared {len(loaded_names)} files: {', '.join(loaded_names)}."]
+    if auto_scale:
+        parts.append("Auto-scaled: each file normalized to [0,1] and stacked with uniform offsets.")
+    if offset and not auto_scale:
+        parts.append(f"Vertical offset: {offset} per file.")
+    if scale != 1.0 and not auto_scale:
+        parts.append(f"Scale factor: {scale}×.")
+    return " ".join(parts)
 
 
 TOOL_DISPATCH = {
@@ -1511,6 +1659,7 @@ TOOL_DISPATCH = {
     "calibrate_scans": tool_calibrate_scans,
     "plot_file": tool_plot_file,
     "list_exports": tool_list_exports,
+    "compare_files": tool_compare_files,
 }
 
 
@@ -1548,6 +1697,7 @@ Available tools:
 - calibrate_scans: Apply the current energy calibration shift to one or more scan files (or all scans in a date subdirectory) and save calibrated copies to exported_data/calibrated/. The calibration checkbox must be enabled.
 - plot_file: Plot a generic two-column data file (txt, csv, dat, etc.) from exported_data/ or any path. First column = X, second column = Y.
 - list_exports: List all files in the exported_data/ directory (including renamed/, calibrated/, images/ subdirectories). Use this to discover what files have been exported, renamed, or calibrated.
+- compare_files: Overlay multiple generic two-column data files on a single plot. Like compare_scans but for exported/generic files. Supports auto_scale, offset, scale, labels, styles, and axis_style.
 
 Rules:
 - The user may refer to scans by full ID (SigScan45611) or just the number (45611)
@@ -1595,6 +1745,8 @@ Rules:
 - Scans from exported_data/ can also be used with plot_scan, compare_scans, and other scan tools — they are searched automatically
 - When the user asks "what files are in exported_data", "list exports", "show exported files", "what have I saved", or wants to see what's in exported_data/, use list_exports
 - list_exports shows all files including subdirectories (renamed/, calibrated/, images/) — use it to discover available exported files before plotting them
+- When the user asks to plot or compare multiple exported data files together (e.g. "plot RuCl3 and RuO2 TEY together", "compare these exported files"), use compare_files with the file paths. Use list_exports first if you need to discover the file paths.
+- compare_files is for generic data files; compare_scans is for SigScan files. If the user refers to files by scan ID, use compare_scans. If they refer to files by name/path in exported_data/, use compare_files.
 - Be helpful and concise
 - If the request is ambiguous, make a reasonable assumption and explain what you did
 """)
