@@ -355,8 +355,9 @@ TOOLS = [
                     "normalize": {"type": "boolean", "description": "If true, divide by I0. Default false."},
                     "e_min": {"type": "number", "description": "Minimum energy in eV for the plot range (zoom). Optional."},
                     "e_max": {"type": "number", "description": "Maximum energy in eV for the plot range (zoom). Optional."},
-                    "offset": {"type": "number", "description": "Vertical offset between curves when comparing multiple scans. Each successive scan is shifted up by this amount. Default 0."},
-                    "scale": {"type": "number", "description": "Multiply all signal values by this factor. Default 1.0."},
+                    "offset": {"type": "number", "description": "Vertical offset between curves when comparing multiple scans. Each successive scan is shifted up by this amount. Default 0. Ignored when auto_scale is true."},
+                    "scale": {"type": "number", "description": "Multiply all signal values by this factor. Default 1.0. Ignored when auto_scale is true."},
+                    "auto_scale": {"type": "boolean", "description": "If true, automatically normalize each spectrum to [0,1] range (min-max) and stack them with uniform vertical offsets. This makes spectra with very different intensities directly comparable. Default false."},
                     "styles": {
                         "type": "array",
                         "description": "Per-curve style overrides. Array of objects, one per scan (single-signal) or one per scan×signal (dual-axis: even indices=left axis, odd=right axis). Each object can have: color (string), linestyle (string), linewidth (number). Curves without a style entry use defaults.",
@@ -789,6 +790,7 @@ def _get_style(styles: list, index: int, defaults: dict) -> dict:
 def tool_compare_scans(scan_ids: list, signal: str = None, signals: list = None,
                        normalize: bool = False, e_min: float = None, e_max: float = None,
                        offset: float = 0, scale: float = 1.0,
+                       auto_scale: bool = False,
                        styles: list = None, labels: list = None,
                        title: str = None, axis_style: dict = None, **kw) -> str:
     global _last_plot, _last_plot_b64
@@ -838,14 +840,23 @@ def tool_compare_scans(scan_ids: list, signal: str = None, signals: list = None,
         if len(energy_f) == 0:
             continue
 
-        v_offset = offset * i  # cumulative offset for each scan
+        # Compute vertical offset
+        if auto_scale:
+            v_offset = i * 1.1  # uniform gap between normalized [0,1] curves
+        else:
+            v_offset = offset * i  # cumulative offset for each scan
 
         if dual_axis:
             # Left axis signal
             if normalize:
-                data_l = xu.normalize_by_i0(df, sig_left)[mask] * scale + v_offset
+                data_l_raw = xu.normalize_by_i0(df, sig_left)[mask]
             else:
-                data_l = xu.get_signal(df, sig_left)[mask] * scale + v_offset
+                data_l_raw = xu.get_signal(df, sig_left)[mask]
+            if auto_scale:
+                dmin, dmax = data_l_raw.min(), data_l_raw.max()
+                data_l = (data_l_raw - dmin) / (dmax - dmin + 1e-30) + v_offset
+            else:
+                data_l = data_l_raw * scale + v_offset
             sty_l = _get_style(styles, style_idx, {
                 "color": colors_left[i % len(colors_left)],
                 "linestyle": "-", "linewidth": 1.0})
@@ -867,9 +878,14 @@ def tool_compare_scans(scan_ids: list, signal: str = None, signals: list = None,
 
             # Right axis signal
             if normalize:
-                data_r = xu.normalize_by_i0(df, sig_right)[mask] * scale + v_offset
+                data_r_raw = xu.normalize_by_i0(df, sig_right)[mask]
             else:
-                data_r = xu.get_signal(df, sig_right)[mask] * scale + v_offset
+                data_r_raw = xu.get_signal(df, sig_right)[mask]
+            if auto_scale:
+                dmin, dmax = data_r_raw.min(), data_r_raw.max()
+                data_r = (data_r_raw - dmin) / (dmax - dmin + 1e-30) + v_offset
+            else:
+                data_r = data_r_raw * scale + v_offset
             sty_r = _get_style(styles, style_idx, {
                 "color": colors_right[i % len(colors_right)],
                 "linestyle": "--", "linewidth": 1.0})
@@ -878,9 +894,14 @@ def tool_compare_scans(scan_ids: list, signal: str = None, signals: list = None,
         else:
             # Single signal mode
             if normalize:
-                sig_data = xu.normalize_by_i0(df, signal)[mask] * scale + v_offset
+                sig_data_raw = xu.normalize_by_i0(df, signal)[mask]
             else:
-                sig_data = xu.get_signal(df, signal)[mask] * scale + v_offset
+                sig_data_raw = xu.get_signal(df, signal)[mask]
+            if auto_scale:
+                dmin, dmax = sig_data_raw.min(), sig_data_raw.max()
+                sig_data = (sig_data_raw - dmin) / (dmax - dmin + 1e-30) + v_offset
+            else:
+                sig_data = sig_data_raw * scale + v_offset
             sty = _get_style(styles, i, {
                 "color": colors_left[i % len(colors_left)],
                 "linestyle": "-", "linewidth": 1.0})
@@ -890,8 +911,13 @@ def tool_compare_scans(scan_ids: list, signal: str = None, signals: list = None,
     ax_left.set_xlabel("Mono Energy (eV)")
 
     if dual_axis:
-        ax_left.set_ylabel(f"{sig_left}{' / I0' if normalize else ''}", color=colors_left[0])
-        ax_right.set_ylabel(f"{sig_right}{' / I0' if normalize else ''}", color=colors_right[0])
+        y_suffix = " / I0" if normalize else ""
+        if auto_scale:
+            ax_left.set_ylabel(f"{sig_left}{y_suffix} (normalized)", color=colors_left[0])
+            ax_right.set_ylabel(f"{sig_right}{y_suffix} (normalized)", color=colors_right[0])
+        else:
+            ax_left.set_ylabel(f"{sig_left}{y_suffix}", color=colors_left[0])
+            ax_right.set_ylabel(f"{sig_right}{y_suffix}", color=colors_right[0])
         ax_left.tick_params(axis="y", labelcolor=colors_left[0])
         ax_right.tick_params(axis="y", labelcolor=colors_right[0])
         auto_title = f"Comparison — {sig_left} (left) vs {sig_right} (right)"
@@ -900,16 +926,21 @@ def tool_compare_scans(scan_ids: list, signal: str = None, signals: list = None,
         lines_r, labels_r = ax_right.get_legend_handles_labels()
         ax_left.legend(lines_l + lines_r, labels_l + labels_r, fontsize=8, ncol=2, loc="best")
     else:
-        ax_left.set_ylabel(ylabel)
+        if auto_scale:
+            ax_left.set_ylabel(f"{ylabel} (normalized)")
+        else:
+            ax_left.set_ylabel(ylabel)
         auto_title = f"Comparison — {ylabel}"
         ax_left.legend(fontsize=9, ncol=2)
 
     if not title:
+        if auto_scale:
+            auto_title += "  [auto-scaled]"
         if e_min is not None or e_max is not None:
             auto_title += f"  [{e_min or ''}–{e_max or ''} eV]"
-        if offset:
+        if offset and not auto_scale:
             auto_title += f"  (offset={offset})"
-        if scale != 1.0:
+        if scale != 1.0 and not auto_scale:
             auto_title += f"  (×{scale})"
         title = auto_title
     ax_left.set_title(title)
@@ -932,11 +963,13 @@ def tool_compare_scans(scan_ids: list, signal: str = None, signals: list = None,
     parts = [f"Compared {len(loaded)} scans: {', '.join(s for s, _, _ in loaded)}."]
     if dual_axis:
         parts.append(f"Left axis: {sig_left}, Right axis: {sig_right}.")
+    if auto_scale:
+        parts.append("Auto-scaled: each spectrum normalized to [0,1] and stacked with uniform offsets.")
     if e_min is not None or e_max is not None:
         parts.append(f"Energy range: {e_min or 'start'}–{e_max or 'end'} eV.")
-    if offset:
+    if offset and not auto_scale:
         parts.append(f"Vertical offset: {offset} per scan.")
-    if scale != 1.0:
+    if scale != 1.0 and not auto_scale:
         parts.append(f"Scale factor: {scale}×.")
     return " ".join(parts)
 
@@ -1451,6 +1484,7 @@ Available tools:
     * e_min/e_max: zoom into a specific energy range
     * offset: vertical offset between curves (each successive scan shifted up)
     * scale: multiply all signal values by a factor
+    * auto_scale: normalize each spectrum to [0,1] range (min-max) and stack with uniform vertical offsets — ideal when spectra have very different intensities
     * signals: dual-axis mode — pass two signals like ['TEY', 'MCP'] to plot the first on the left axis and the second on the right axis
     * When using dual-axis, use 'signals' parameter (array of 2) instead of 'signal' (single string)
 - show_scan_info: Show metadata for a scan
@@ -1471,6 +1505,7 @@ Rules:
 - When the user asks to "zoom in" or specifies an energy range (e.g. "plot from 520 to 560 eV"), use e_min/e_max parameters
 - When the user asks to plot two different signals (e.g. "plot TEY and MCP"), use compare_scans with signals=['TEY', 'MCP'] for dual-axis
 - When the user asks to "offset" or "stack" curves, use the offset parameter in compare_scans
+- When the user asks to "auto scale", "auto-scale", "normalize and stack", or "make them comparable" for multiple spectra with different intensities, use auto_scale=true in compare_scans. This normalizes each spectrum to [0,1] and stacks them with uniform offsets.
 - When the user asks to "scale" or "multiply" signals, use the scale parameter in compare_scans
 - When the user asks to change line color, thickness, or style (e.g. "use a red dashed line", "make it thicker", "use dotted lines"), use the color/linestyle/linewidth parameters in plot_scan, or the styles array in compare_scans
 - For compare_scans styles: pass an array of objects like [{{"color":"red","linewidth":2}}, {{"color":"blue","linestyle":"--"}}], one per curve. In dual-axis mode, even indices are left-axis curves, odd indices are right-axis curves.
