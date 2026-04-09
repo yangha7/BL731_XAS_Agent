@@ -573,6 +573,18 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_exports",
+            "description": "List all files in the exported_data/ directory, including subdirectories (renamed/, calibrated/, images/, etc.). Use this to discover exported, renamed, calibrated, or saved data files.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
 ]
 
 
@@ -1447,6 +1459,43 @@ def tool_plot_file(filepath: str, title: str = None, color: str = "blue",
     return f"Plotted {fname}: {len(x_data)} points, X={x_label}, Y={y_label}."
 
 
+def tool_list_exports(**kw) -> str:
+    """List all files in the exported_data/ directory."""
+    export_dir = os.path.join(os.path.dirname(__file__), "exported_data")
+    if not os.path.isdir(export_dir):
+        return "No exported_data/ directory found. No files have been exported yet."
+
+    files_by_dir = {}
+    for root, _dirs, files in os.walk(export_dir):
+        rel = os.path.relpath(root, export_dir)
+        if rel == ".":
+            dir_label = "(top-level)"
+        else:
+            dir_label = rel
+        txt_files = sorted(f for f in files if not f.startswith("."))
+        if txt_files:
+            files_by_dir[dir_label] = txt_files
+
+    if not files_by_dir:
+        return "exported_data/ directory is empty."
+
+    total = sum(len(v) for v in files_by_dir.values())
+    lines = [f"Found {total} files in exported_data/:"]
+    for dir_label in sorted(files_by_dir.keys()):
+        flist = files_by_dir[dir_label]
+        if dir_label == "(top-level)":
+            for f in flist:
+                lines.append(f"  {f}")
+        else:
+            lines.append(f"  {dir_label}/")
+            for f in flist:
+                lines.append(f"    {f}")
+    lines.append("")
+    lines.append("Tip: Use plot_file to plot any of these files, e.g. plot_file('exported_data/RuCl3_Powder_TEY_I0.txt').")
+    lines.append("SigScan files (renamed/calibrated) can also be used with plot_scan and compare_scans by scan ID.")
+    return "\n".join(lines)
+
+
 TOOL_DISPATCH = {
     "list_scans": tool_list_scans,
     "plot_scan": tool_plot_scan,
@@ -1461,6 +1510,7 @@ TOOL_DISPATCH = {
     "rename_scan": tool_rename_scan,
     "calibrate_scans": tool_calibrate_scans,
     "plot_file": tool_plot_file,
+    "list_exports": tool_list_exports,
 }
 
 
@@ -1497,6 +1547,7 @@ Available tools:
 - rename_scan: Duplicate a complete raw scan file with a descriptive name to exported_data/renamed/ (full raw data copy, original is never modified)
 - calibrate_scans: Apply the current energy calibration shift to one or more scan files (or all scans in a date subdirectory) and save calibrated copies to exported_data/calibrated/. The calibration checkbox must be enabled.
 - plot_file: Plot a generic two-column data file (txt, csv, dat, etc.) from exported_data/ or any path. First column = X, second column = Y.
+- list_exports: List all files in the exported_data/ directory (including renamed/, calibrated/, images/ subdirectories). Use this to discover what files have been exported, renamed, or calibrated.
 
 Rules:
 - The user may refer to scans by full ID (SigScan45611) or just the number (45611)
@@ -1542,6 +1593,8 @@ Rules:
 - When the user asks to plot a file from exported_data/ (e.g. a calibrated file, a renamed file, or a saved data file), use plot_file with the filepath
 - plot_file works with any two-column text file (tab, comma, or space separated) — use it for exported data, calibrated data, or any generic data file
 - Scans from exported_data/ can also be used with plot_scan, compare_scans, and other scan tools — they are searched automatically
+- When the user asks "what files are in exported_data", "list exports", "show exported files", "what have I saved", or wants to see what's in exported_data/, use list_exports
+- list_exports shows all files including subdirectories (renamed/, calibrated/, images/) — use it to discover available exported files before plotting them
 - Be helpful and concise
 - If the request is ambiguous, make a reasonable assumption and explain what you did
 """)
