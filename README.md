@@ -17,8 +17,13 @@ This project provides a conversational chat interface where users can explore, v
 ├── 731_Data/            # Scan data files (SigScan*.txt)
 │   ├── SigScan45611.txt
 │   ├── SigScan45612.txt
+│   ├── 260401/          # Date-coded subdirectories (YYMMDD)
 │   └── ...
 ├── exported_data/       # Saved/exported analysis results
+│   ├── *.txt            # Exported two-column data files
+│   ├── renamed/         # Renamed scan copies (full raw data)
+│   ├── calibrated/      # Energy-calibrated scan copies
+│   └── images/          # Saved plot images (PNG)
 └── README.md            # This file
 ```
 
@@ -125,16 +130,21 @@ The agent has access to the following analysis tools, which it calls automatical
 
 | Tool | Description | Example Prompt |
 |------|-------------|----------------|
-| **list_scans** | List all available scan files | *"What scans do we have?"* |
+| **list_scans** | List available scan files (with date filtering) | *"What scans do we have?"*, *"List scans from 260401"* |
+| **list_exports** | List all files in exported_data/ (renamed, calibrated, saved) | *"What files are in exported_data?"* |
 | **plot_scan** | Plot a single scan (raw or signal/I0) | *"Plot scan 45616 MCP"* |
 | **compare_scans** | Overlay multiple scans on one plot | *"Compare scans 45611 and 45612 TEY"* |
+| **compare_files** | Overlay multiple exported data files on one plot | *"Plot RuCl3 and RuO2 TEY together"* |
+| **plot_file** | Plot a generic two-column data file | *"Plot exported_data/RuCl3_Powder_TEY_I0.txt"* |
 | **show_scan_info** | Show scan metadata (date, file path, columns, etc.) | *"Show info for scan 45616"* |
 | **normalize_scan** | Athena-style pre-edge subtraction and post-edge normalization | *"Normalize scan 45616 MCP"* |
 | **derivative_scan** | Compute smoothed 1st or 2nd derivative (Savitzky-Golay) | *"Show the 2nd derivative of scan 45616 MCP"* |
 | **find_peaks_scan** | Detect peaks and shoulders with tunable sensitivity | *"Find peaks in scan 45616 MCP"* |
 | **identify_edge** | Identify element and absorption edge from peak energies + metadata | *"What element is scan 45616?"* |
 | **save_data** | Export the last plotted data to a text file | *"Save that data"* |
+| **save_image** | Export the last plot as a PNG image | *"Save the plot as PNG"* |
 | **rename_scan** | Copy a scan with a descriptive name (original unchanged) | *"Rename scan 45616 to Cu_L3_edge_sample_A"* |
+| **calibrate_scans** | Apply energy calibration shift to scan files in batch | *"Calibrate all scans from 260401"* |
 
 ### Peak Detection Sensitivity
 
@@ -155,6 +165,60 @@ Example: *"Find peaks in scan 45616 MCP with high sensitivity"*
 - **Inline plots** — all plots appear directly in the chat as images
 - **Input history** — press ↑/↓ arrow keys to recall previous messages
 - **Clear chat** — click the 🗑️ button to reset the conversation
+- **File explorer sidebar** — browse scan files and exported data with a collapsible tree view
+- **Energy calibration panel** — set reference/measured energy values and apply calibration shifts in batch
+- **Clean exported data** — one-click button to clear all exported files (with confirmation dialog)
+- **Quick-link file insertion** — click any file in the sidebar to insert its name into the chat input
+
+### Plot Styling
+
+The agent supports extensive plot customization through natural language:
+
+- **Line styles**: color, linestyle (`-`, `--`, `-.`, `:`), linewidth
+- **Per-curve styles**: pass a `styles` array in `compare_scans` for individual curve styling
+- **Axis styling**: font family, title/label/tick sizes, legend size
+- **Per-axis colors**: independent colors for X-axis, left Y-axis, and right Y-axis labels and ticks
+- **Custom labels and titles**: set legend labels and plot titles via natural language
+
+Example: *"Use Arial font, make the title 16pt, color the left axis blue and right axis red"*
+
+### Auto-Scale Modes
+
+When comparing multiple spectra with very different intensity ranges, use `auto_scale`:
+
+| Mode | Behavior | Example Prompt |
+|------|----------|----------------|
+| `overlay` | Normalize each spectrum to [0,1] and overlay at same baseline | *"Auto scale these spectra"* |
+| `offset` | Normalize each spectrum to [0,1] and stack with vertical gaps | *"Auto scale with offset"* |
+
+The default mode is `overlay` — all curves are normalized and overlaid for direct shape comparison.
+
+### Dual-Axis Plotting
+
+Plot two different signals on left and right Y-axes:
+
+```
+"Compare scans 45611 and 45612 with TEY on left and MCP on right"
+```
+
+Each axis has independent color styling via `y_label_color` / `y_right_label_color` and `y_tick_color` / `y_right_tick_color`.
+
+### Batch Calibration
+
+Apply energy calibration to multiple scans at once:
+
+1. Enable the calibration checkbox in the sidebar
+2. Set reference and measured energy values
+3. Ask: *"Calibrate all scans from 260401"* or *"Calibrate scans 45611, 45612, 45613"*
+
+Calibrated copies are saved to `exported_data/calibrated/` with `_cal` suffix.
+
+### Working with Exported Data
+
+- Scans in `exported_data/` are automatically searchable by scan ID (e.g., `plot_scan`, `compare_scans`)
+- Two-column data files can be plotted with `plot_file` or compared with `compare_files`
+- Use `list_exports` to discover what files have been exported
+- All file tools support `e_min`/`e_max` for energy range filtering
 
 ## Data Format
 
