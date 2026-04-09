@@ -330,7 +330,9 @@ TOOLS = [
                             "tick_size": {"type": "number", "description": "Tick label font size in points. Default: 10."},
                             "tick_color": {"type": "string", "description": "Color for all tick labels/marks. Overridden by x_tick_color / y_tick_color if set."},
                             "x_tick_color": {"type": "string", "description": "X-axis tick label and mark color."},
-                            "y_tick_color": {"type": "string", "description": "Y-axis tick label and mark color."},
+                            "y_tick_color": {"type": "string", "description": "Left Y-axis tick label and mark color."},
+                            "y_right_label_color": {"type": "string", "description": "Right Y-axis label color (dual-axis mode). Defaults to y_label_color if not set."},
+                            "y_right_tick_color": {"type": "string", "description": "Right Y-axis tick color (dual-axis mode). Defaults to y_tick_color if not set."},
                             "legend_size": {"type": "number", "description": "Legend font size in points. Default: 9."},
                         },
                     },
@@ -367,7 +369,7 @@ TOOLS = [
                             },
                         },
                     },
-                    "labels": {"type": "array", "items": {"type": "string"}, "description": "Custom legend labels, one per scan. If not provided, scan IDs are used. In dual-axis mode, each scan produces two legend entries (appended with signal name)."},
+                    "labels": {"type": "array", "items": {"type": "string"}, "description": "Custom legend labels, one per scan. If not provided, scan IDs are used with signal names appended in dual-axis mode. When custom labels are provided, they are used as-is without appending signal names."},
                     "title": {"type": "string", "description": "Custom plot title. Default: auto-generated."},
                     "axis_style": {
                         "type": "object",
@@ -383,7 +385,9 @@ TOOLS = [
                             "tick_size": {"type": "number", "description": "Tick label font size in points."},
                             "tick_color": {"type": "string", "description": "Color for all tick labels/marks. Overridden by x_tick_color / y_tick_color."},
                             "x_tick_color": {"type": "string", "description": "X-axis tick color."},
-                            "y_tick_color": {"type": "string", "description": "Y-axis tick color."},
+                            "y_tick_color": {"type": "string", "description": "Left Y-axis tick color."},
+                            "y_right_label_color": {"type": "string", "description": "Right Y-axis label color (dual-axis)."},
+                            "y_right_tick_color": {"type": "string", "description": "Right Y-axis tick color (dual-axis)."},
                             "legend_size": {"type": "number", "description": "Legend font size in points."},
                         },
                     },
@@ -722,13 +726,14 @@ def _apply_axis_style(ax, axis_style: dict = None, ax_right=None):
     if font_kw:
         lbl_y.set_fontfamily(font_kw.get("fontfamily"))
 
-    # Right axis labels (dual-axis)
+    # Right axis labels (dual-axis) — independent color
     if ax_right:
+        y_right_label_color = s.get("y_right_label_color") or y_label_color
         lbl_r = ax_right.yaxis.label
         if label_size:
             lbl_r.set_fontsize(label_size)
-        if y_label_color:
-            lbl_r.set_color(y_label_color)
+        if y_right_label_color:
+            lbl_r.set_color(y_right_label_color)
         if font_kw:
             lbl_r.set_fontfamily(font_kw.get("fontfamily"))
 
@@ -750,12 +755,13 @@ def _apply_axis_style(ax, axis_style: dict = None, ax_right=None):
     if y_tick_color:
         ax.yaxis.set_tick_params(labelcolor=y_tick_color, color=y_tick_color)
 
-    # Right axis ticks
+    # Right axis ticks — independent color
     if ax_right:
+        y_right_tick_color = s.get("y_right_tick_color") or y_tick_color
         if tick_size:
             ax_right.yaxis.set_tick_params(labelsize=tick_size)
-        if y_tick_color:
-            ax_right.yaxis.set_tick_params(labelcolor=y_tick_color, color=y_tick_color)
+        if y_right_tick_color:
+            ax_right.yaxis.set_tick_params(labelcolor=y_right_tick_color, color=y_right_tick_color)
 
     # Legend
     legend_size = s.get("legend_size")
@@ -843,8 +849,20 @@ def tool_compare_scans(scan_ids: list, signal: str = None, signals: list = None,
             sty_l = _get_style(styles, style_idx, {
                 "color": colors_left[i % len(colors_left)],
                 "linestyle": "-", "linewidth": 1.0})
-            lbl_base = labels[i] if labels and i < len(labels) else sid
-            ax_left.plot(energy_f, data_l, label=f"{lbl_base} {sig_left}", **sty_l)
+            # Determine legend labels for dual-axis
+            # If labels has 2× scans entries, use pairs: labels[2i] for left, labels[2i+1] for right
+            # If labels has 1× scans entries, use as-is (no signal name appended)
+            # If no labels, use scan ID + signal name
+            if labels and len(labels) >= 2 * len(loaded):
+                lbl_left = labels[2 * i]
+                lbl_right_label = labels[2 * i + 1]
+            elif labels and i < len(labels):
+                lbl_left = labels[i]
+                lbl_right_label = labels[i]
+            else:
+                lbl_left = f"{sid} {sig_left}"
+                lbl_right_label = f"{sid} {sig_right}"
+            ax_left.plot(energy_f, data_l, label=lbl_left, **sty_l)
             style_idx += 1
 
             # Right axis signal
@@ -855,7 +873,7 @@ def tool_compare_scans(scan_ids: list, signal: str = None, signals: list = None,
             sty_r = _get_style(styles, style_idx, {
                 "color": colors_right[i % len(colors_right)],
                 "linestyle": "--", "linewidth": 1.0})
-            ax_right.plot(energy_f, data_r, label=f"{lbl_base} {sig_right}", **sty_r)
+            ax_right.plot(energy_f, data_r, label=lbl_right_label, **sty_r)
             style_idx += 1
         else:
             # Single signal mode
@@ -1472,7 +1490,9 @@ Rules:
 - When the user asks to set a custom plot title (e.g. "title it Fe L-edge"), use the title parameter in plot_scan or compare_scans
 - When the user asks to change axis fonts, sizes, or colors (e.g. "use Arial font", "make the title bigger", "use larger tick labels"), use the axis_style parameter with appropriate keys: font_family, title_size, title_color, label_size, label_color, tick_size, tick_color, legend_size
 - For per-axis colors, use x_label_color, y_label_color, x_tick_color, y_tick_color (these override the generic label_color / tick_color)
-- axis_style example: {{"font_family": "Arial", "title_size": 16, "label_size": 14, "x_label_color": "blue", "y_label_color": "red"}}
+- For dual-axis mode: use y_right_label_color and y_right_tick_color to style the right Y-axis independently from the left Y-axis
+- axis_style example: {{"font_family": "Arial", "title_size": 16, "y_label_color": "blue", "y_right_label_color": "red"}}
+- When providing custom labels in dual-axis mode, labels are used as-is without appending signal names. Provide descriptive labels like ["TiO2 TEY", "TiO2 MCP"] or just ["TiO2"] (signal names are only auto-appended when no custom labels are given).
 - When the user asks to "list" scans, use list_scans with an appropriate date filter
 - If the user asks to list scans without specifying a date, default to the past week
 - If the user mentions a specific date like "April 1st" or "yesterday", convert it to the appropriate date filter
