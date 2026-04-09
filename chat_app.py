@@ -13,6 +13,7 @@ import textwrap
 import base64
 import io
 import datetime
+import shutil
 
 import numpy as np
 import matplotlib
@@ -190,6 +191,20 @@ TOOLS = [
                     "linestyle": {"type": "string", "enum": ["-", "--", "-.", ":", "solid", "dashed", "dashdot", "dotted"], "description": "Line style. Default: solid ('-')."},
                     "linewidth": {"type": "number", "description": "Line width in points. Default: 1.2."},
                     "label": {"type": "string", "description": "Custom legend label for the curve. Default: scan ID."},
+                    "title": {"type": "string", "description": "Custom plot title. Default: auto-generated from scan ID and metadata."},
+                    "axis_style": {
+                        "type": "object",
+                        "description": "Customize axis appearance: font sizes, colors, font family.",
+                        "properties": {
+                            "font_family": {"type": "string", "description": "Font family for all text (e.g. 'Arial', 'Times New Roman', 'serif', 'monospace'). Default: system default."},
+                            "title_size": {"type": "number", "description": "Title font size in points. Default: 14."},
+                            "label_size": {"type": "number", "description": "Axis label font size in points. Default: 12."},
+                            "tick_size": {"type": "number", "description": "Tick label font size in points. Default: 10."},
+                            "label_color": {"type": "string", "description": "Axis label color. Default: black."},
+                            "tick_color": {"type": "string", "description": "Tick label and tick mark color. Default: black."},
+                            "legend_size": {"type": "number", "description": "Legend font size in points. Default: 9."},
+                        },
+                    },
                 },
                 "required": ["scan_id", "signal"],
             },
@@ -224,6 +239,20 @@ TOOLS = [
                         },
                     },
                     "labels": {"type": "array", "items": {"type": "string"}, "description": "Custom legend labels, one per scan. If not provided, scan IDs are used. In dual-axis mode, each scan produces two legend entries (appended with signal name)."},
+                    "title": {"type": "string", "description": "Custom plot title. Default: auto-generated."},
+                    "axis_style": {
+                        "type": "object",
+                        "description": "Customize axis appearance: font sizes, colors, font family.",
+                        "properties": {
+                            "font_family": {"type": "string", "description": "Font family for all text."},
+                            "title_size": {"type": "number", "description": "Title font size in points."},
+                            "label_size": {"type": "number", "description": "Axis label font size in points."},
+                            "tick_size": {"type": "number", "description": "Tick label font size in points."},
+                            "label_color": {"type": "string", "description": "Axis label color."},
+                            "tick_color": {"type": "string", "description": "Tick label and tick mark color."},
+                            "legend_size": {"type": "number", "description": "Legend font size in points."},
+                        },
+                    },
                 },
                 "required": ["scan_ids"],
             },
@@ -406,7 +435,8 @@ def tool_list_scans(date: str = None, **kw) -> str:
 def tool_plot_scan(scan_id: str, signal: str, normalize: bool = False,
                    e_min: float = None, e_max: float = None,
                    color: str = "blue", linestyle: str = "-",
-                   linewidth: float = 1.2, label: str = None, **kw) -> str:
+                   linewidth: float = 1.2, label: str = None,
+                   title: str = None, axis_style: dict = None, **kw) -> str:
     global _last_plot, _last_plot_b64
     try:
         sid, meta, df = _load(scan_id)
@@ -442,11 +472,15 @@ def tool_plot_scan(scan_id: str, signal: str, normalize: bool = False,
             linewidth=linewidth, label=legend_label)
     ax.set_xlabel("Mono Energy (eV)")
     ax.set_ylabel(ylabel)
-    title = f"{sid}  —  {meta['scan_type']}  ({meta['date']})"
-    if e_min is not None or e_max is not None:
-        title += f"  [{e_min or energy.min():.1f}–{e_max or energy.max():.1f} eV]"
-    ax.set_title(title)
+    if title:
+        plot_title = title
+    else:
+        plot_title = f"{sid}  —  {meta['scan_type']}  ({meta['date']})"
+        if e_min is not None or e_max is not None:
+            plot_title += f"  [{e_min or energy.min():.1f}–{e_max or energy.max():.1f} eV]"
+    ax.set_title(plot_title)
     ax.legend(fontsize=9)
+    _apply_axis_style(ax, axis_style)
     plt.tight_layout()
 
     img_b64 = _fig_to_base64(fig)
@@ -455,6 +489,66 @@ def tool_plot_scan(scan_id: str, signal: str, normalize: bool = False,
     _last_plot = {"energy": energy_plot, "signal": signal_plot, "signal_name": ylabel, "scan_id": sid}
     range_info = f"{energy_plot.min():.2f}–{energy_plot.max():.2f} eV, {len(energy_plot)} pts"
     return f"Plotted {ylabel} for {sid}. Energy: {range_info}."
+
+
+def _apply_axis_style(ax, axis_style: dict = None, ax_right=None):
+    """Apply axis styling (fonts, colors, sizes) to a matplotlib axes."""
+    if not axis_style:
+        return
+    s = axis_style
+    font_kw = {}
+    if "font_family" in s and s["font_family"]:
+        font_kw["fontfamily"] = s["font_family"]
+
+    # Title
+    if "title_size" in s or font_kw:
+        ax.title.set_fontsize(s.get("title_size", ax.title.get_fontsize()))
+        if font_kw:
+            ax.title.set_fontfamily(font_kw.get("fontfamily"))
+
+    # Axis labels
+    label_size = s.get("label_size")
+    label_color = s.get("label_color")
+    for axis_obj in [ax.xaxis, ax.yaxis]:
+        lbl = axis_obj.label
+        if label_size:
+            lbl.set_fontsize(label_size)
+        if label_color:
+            lbl.set_color(label_color)
+        if font_kw:
+            lbl.set_fontfamily(font_kw.get("fontfamily"))
+
+    # Right axis labels (dual-axis)
+    if ax_right:
+        lbl_r = ax_right.yaxis.label
+        if label_size:
+            lbl_r.set_fontsize(label_size)
+        if label_color:
+            lbl_r.set_color(label_color)
+        if font_kw:
+            lbl_r.set_fontfamily(font_kw.get("fontfamily"))
+
+    # Tick labels
+    tick_size = s.get("tick_size")
+    tick_color = s.get("tick_color")
+    for axis_obj in [ax.xaxis, ax.yaxis]:
+        if tick_size:
+            axis_obj.set_tick_params(labelsize=tick_size)
+        if tick_color:
+            axis_obj.set_tick_params(labelcolor=tick_color, color=tick_color)
+    if ax_right:
+        if tick_size:
+            ax_right.yaxis.set_tick_params(labelsize=tick_size)
+        if tick_color:
+            ax_right.yaxis.set_tick_params(labelcolor=tick_color, color=tick_color)
+
+    # Legend
+    legend_size = s.get("legend_size")
+    if legend_size:
+        legend = ax.get_legend()
+        if legend:
+            for text in legend.get_texts():
+                text.set_fontsize(legend_size)
 
 
 def _get_style(styles: list, index: int, defaults: dict) -> dict:
@@ -474,7 +568,8 @@ def _get_style(styles: list, index: int, defaults: dict) -> dict:
 def tool_compare_scans(scan_ids: list, signal: str = None, signals: list = None,
                        normalize: bool = False, e_min: float = None, e_max: float = None,
                        offset: float = 0, scale: float = 1.0,
-                       styles: list = None, labels: list = None, **kw) -> str:
+                       styles: list = None, labels: list = None,
+                       title: str = None, axis_style: dict = None, **kw) -> str:
     global _last_plot, _last_plot_b64
 
     # Determine signal mode: single signal or dual-axis
@@ -566,23 +661,26 @@ def tool_compare_scans(scan_ids: list, signal: str = None, signals: list = None,
         ax_right.set_ylabel(f"{sig_right}{' / I0' if normalize else ''}", color=colors_right[0])
         ax_left.tick_params(axis="y", labelcolor=colors_left[0])
         ax_right.tick_params(axis="y", labelcolor=colors_right[0])
-        title = f"Comparison — {sig_left} (left) vs {sig_right} (right)"
+        auto_title = f"Comparison — {sig_left} (left) vs {sig_right} (right)"
         # Combine legends from both axes
         lines_l, labels_l = ax_left.get_legend_handles_labels()
         lines_r, labels_r = ax_right.get_legend_handles_labels()
         ax_left.legend(lines_l + lines_r, labels_l + labels_r, fontsize=8, ncol=2, loc="best")
     else:
         ax_left.set_ylabel(ylabel)
-        title = f"Comparison — {ylabel}"
+        auto_title = f"Comparison — {ylabel}"
         ax_left.legend(fontsize=9, ncol=2)
 
-    if e_min is not None or e_max is not None:
-        title += f"  [{e_min or ''}–{e_max or ''} eV]"
-    if offset:
-        title += f"  (offset={offset})"
-    if scale != 1.0:
-        title += f"  (×{scale})"
+    if not title:
+        if e_min is not None or e_max is not None:
+            auto_title += f"  [{e_min or ''}–{e_max or ''} eV]"
+        if offset:
+            auto_title += f"  (offset={offset})"
+        if scale != 1.0:
+            auto_title += f"  (×{scale})"
+        title = auto_title
     ax_left.set_title(title)
+    _apply_axis_style(ax_left, axis_style, ax_right=ax_right)
     plt.tight_layout()
 
     img_b64 = _fig_to_base64(fig)
@@ -1037,6 +1135,9 @@ Rules:
 - save_image exports the last plot as a PNG image file — use when the user says "save the plot", "export image", "save as PNG"
 - Do NOT call both rename_scan and save_data for the same request — choose the appropriate one
 - When the user asks to change legend text (e.g. "label it as Sample A"), use the label parameter in plot_scan or labels array in compare_scans
+- When the user asks to set a custom plot title (e.g. "title it Fe L-edge"), use the title parameter in plot_scan or compare_scans
+- When the user asks to change axis fonts, sizes, or colors (e.g. "use Arial font", "make the title bigger", "use larger tick labels"), use the axis_style parameter with appropriate keys: font_family, title_size, label_size, tick_size, label_color, tick_color, legend_size
+- axis_style example: {{"font_family": "Arial", "title_size": 16, "label_size": 14, "tick_size": 12}}
 - When the user asks to "list" scans, use list_scans with an appropriate date filter
 - If the user asks to list scans without specifying a date, default to the past week
 - If the user mentions a specific date like "April 1st" or "yesterday", convert it to the appropriate date filter
@@ -1196,6 +1297,75 @@ HTML_TEMPLATE = r"""
     padding: 4px 0;
     font-size: 13px;
   }
+
+  /* ── Clean exports button ──────────────────────────────────────── */
+  #clean-exports-panel {
+    border-top: 1px solid #333;
+    padding: 8px 10px;
+  }
+  #clean-exports-btn {
+    width: 100%;
+    padding: 6px 0;
+    background: #5c2020;
+    color: #e0e0e0;
+    border: 1px solid #7a3030;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  #clean-exports-btn:hover { background: #7a3030; color: #fff; }
+
+  /* ── Confirm dialog overlay ────────────────────────────────────── */
+  #confirm-overlay {
+    display: none;
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.55);
+    z-index: 9999;
+    align-items: center;
+    justify-content: center;
+  }
+  #confirm-overlay.visible { display: flex; }
+  #confirm-dialog {
+    background: #2d2d2d;
+    border: 1px solid #555;
+    border-radius: 8px;
+    padding: 24px 28px;
+    min-width: 320px;
+    text-align: center;
+    color: #e0e0e0;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  }
+  #confirm-dialog p {
+    margin: 0 0 18px 0;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  #confirm-dialog .confirm-buttons {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+  }
+  #confirm-dialog .confirm-buttons button {
+    padding: 7px 22px;
+    border-radius: 4px;
+    border: 1px solid #555;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  #confirm-dialog .btn-cancel {
+    background: #3c3c3c;
+    color: #ccc;
+  }
+  #confirm-dialog .btn-cancel:hover { background: #555; }
+  #confirm-dialog .btn-confirm {
+    background: #a03030;
+    color: #fff;
+    border-color: #c04040;
+  }
+  #confirm-dialog .btn-confirm:hover { background: #c04040; }
 
   /* ── Calibration panel ───────────────────────────────────────────── */
   #cal-panel {
@@ -1449,6 +1619,22 @@ HTML_TEMPLATE = r"""
           <label for="cal-enabled">Apply calibration</label>
         </div>
         <div class="cal-shift" id="cal-shift-display">Shift: 0.00 eV</div>
+      </div>
+
+      <!-- ── Clean exported data button ──────────────────────────────── -->
+      <div id="clean-exports-panel">
+        <button id="clean-exports-btn">🗑 Clean Exported Data</button>
+      </div>
+    </div>
+
+    <!-- ── Confirm dialog overlay ──────────────────────────────────── -->
+    <div id="confirm-overlay">
+      <div id="confirm-dialog">
+        <p>⚠️ This will <strong>permanently delete</strong> all files in the <code>exported_data</code> directory.<br>Are you sure?</p>
+        <div class="confirm-buttons">
+          <button class="btn-cancel" id="confirm-cancel">Cancel</button>
+          <button class="btn-confirm" id="confirm-yes">Delete All</button>
+        </div>
       </div>
     </div>
 
@@ -1805,6 +1991,37 @@ calCal.addEventListener("input", updateShiftDisplay);
 
 // Load calibration state on startup
 loadCalibration();
+
+// ── Clean exported data ──────────────────────────────────────────────
+const cleanBtn = document.getElementById("clean-exports-btn");
+const confirmOverlay = document.getElementById("confirm-overlay");
+const confirmCancel = document.getElementById("confirm-cancel");
+const confirmYes = document.getElementById("confirm-yes");
+
+cleanBtn.addEventListener("click", () => {
+  confirmOverlay.classList.add("visible");
+});
+confirmCancel.addEventListener("click", () => {
+  confirmOverlay.classList.remove("visible");
+});
+confirmOverlay.addEventListener("click", (e) => {
+  if (e.target === confirmOverlay) confirmOverlay.classList.remove("visible");
+});
+confirmYes.addEventListener("click", async () => {
+  confirmOverlay.classList.remove("visible");
+  try {
+    const resp = await fetch("/api/clear-exports", { method: "POST" });
+    const data = await resp.json();
+    if (data.status === "ok") {
+      addMessage("assistant", "🗑 Exported data cleaned: " + data.deleted + " file(s) removed.");
+      loadFileTree();   // refresh file explorer
+    } else {
+      addMessage("assistant", "⚠️ Error cleaning exports: " + (data.error || "unknown"));
+    }
+  } catch (err) {
+    addMessage("assistant", "⚠️ Network error cleaning exports: " + err.message);
+  }
+});
 </script>
 </body>
 </html>
@@ -1883,6 +2100,28 @@ def calibration_endpoint():
     # GET
     shift = _calibration["cal_eV"] - _calibration["raw_eV"]
     return jsonify({"calibration": _calibration, "shift": shift})
+
+
+@app.route("/api/clear-exports", methods=["POST"])
+def clear_exports():
+    """Delete all files and subdirectories inside exported_data/."""
+    export_dir = os.path.join(os.path.dirname(__file__), "exported_data")
+    if not os.path.isdir(export_dir):
+        return jsonify({"status": "ok", "deleted": 0, "message": "No exported_data directory found."})
+    count = 0
+    for entry in os.listdir(export_dir):
+        entry_path = os.path.join(export_dir, entry)
+        try:
+            if os.path.isfile(entry_path) or os.path.islink(entry_path):
+                os.unlink(entry_path)
+                count += 1
+            elif os.path.isdir(entry_path):
+                n = sum(len(files) for _, _, files in os.walk(entry_path))
+                shutil.rmtree(entry_path)
+                count += n
+        except Exception as e:
+            return jsonify({"status": "error", "error": str(e)}), 500
+    return jsonify({"status": "ok", "deleted": count})
 
 
 if __name__ == "__main__":
