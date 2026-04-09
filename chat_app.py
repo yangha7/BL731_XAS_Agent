@@ -8,6 +8,7 @@ Then open http://localhost:5050 in your browser.
 
 import os
 import sys
+import re
 import json
 import textwrap
 import base64
@@ -16,6 +17,7 @@ import datetime
 import shutil
 
 import numpy as np
+import pandas as pd
 import matplotlib
 matplotlib.use("Agg")  # non-interactive backend for server
 import matplotlib.pyplot as plt
@@ -144,9 +146,131 @@ def _get_energy(df):
 def _load(scan_id: str) -> tuple:
     sid = xu.resolve_scan_id(scan_id)
     if sid not in _cache:
-        fp = xu.scan_filepath(sid, DATA_DIR)
+        try:
+            fp = xu.scan_filepath(sid, DATA_DIR)
+        except FileNotFoundError:
+            # Also search in exported_data/ directory
+            export_dir = os.path.join(os.path.dirname(__file__), "exported_data")
+            fp = xu.scan_filepath(sid, export_dir)
         _cache[sid] = {"meta": xu.parse_header(fp), "df": xu.load_scan(fp)}
     return sid, _cache[sid]["meta"], _cache[sid]["df"]
+
+
+def _load_generic_file(filepath: str) -> tuple:
+    """Load a generic data file for plotting.
+
+    Returns (x_data, y_data, x_label, y_label, filename).
+    Handles:
+      - Simple two-column files (tab/comma/space separated)
+      - Multi-column files (uses first two numeric columns)
+      - Files with header lines (auto-detects by scanning for numeric data)
+      - CSV files
+    """
+    fname = os.path.basename(filepath)
+    ext = os.path.splitext(filepath)[1].lower()
+
+    # First, try to detect if this is a beamline scan file (has "Time of Day" header)
+    # If so, use the xas_utils loader
+    try:
+        with open(filepath, "r") as f:
+            for i, line in enumerate(f):
+                if line.startswith("Time of Day"):
+                    # This is a scan file — use xas_utils
+                    df = xu.load_scan(filepath)
+                    energy = xu.get_energy(df)
+                    # Default to TEY if available
+                    for sig in ["TEY", "TFY", "MCP"]:
+                        try:
+                            sig_data = xu.get_signal(df, sig)
+                            return energy, sig_data, "Energy (eV)", sig, fname
+                        except (KeyError, ValueError):
+                            continue
+                    # Fallback: use first two numeric columns
+                    break
+                if i > 30:
+                    break
+    except Exception:
+        pass
+
+    # Generic file loading with auto-detection of header and separator
+    # Read all lines and find where numeric data starts
+    with open(filepath, "r") as f:
+        lines = f.readlines()
+
+    # Find the first line that looks like numeric data
+    header_line = None
+    data_start = 0
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        # Check if this line has mostly numeric tokens
+        tokens = re.split(r'[\t,\s]+', stripped)
+        numeric_count = sum(1 for t in tokens if re.match(r'^[+-]?\d*\.?\d+([eE][+-]?\d+)?$', t))
+        if numeric_count >= 2:
+            # Previous non-empty, non-comment line might be the header
+            data_start = i
+            break
+        else:
+            header_line = stripped
+
+    # Detect separator from the data lines
+    if data_start < len(lines):
+        sample = lines[data_start]
+        if "\t" in sample:
+            sep = "\t"
+        elif "," in sample:
+            sep = ","
+        else:
+            sep = r"\s+"
+    else:
+        sep = "\t"
+
+    # Load with pandas
+    # If we found a header line just before data, include it as column names
+    if header_line:
+        skip = max(0, data_start - 1)  # skip everything before the header line
+        hdr = 0  # first row after skip is the header
+    else:
+        skip = data_start
+        hdr = None  # no header row
+
+    try:
+        df = pd.read_csv(filepath, sep=sep, skiprows=skip,
+                         header=hdr, engine="python", comment="#")
+    except Exception:
+        # Fallback: skip everything and use no header
+        df = pd.read_csv(filepath, sep=sep, skiprows=data_start,
+                         header=None, engine="python", comment="#")
+
+    if len(df.columns) < 2:
+        raise ValueError(f"File {fname} has fewer than 2 columns.")
+
+    # Strip column names
+    df.columns = [str(c).strip() for c in df.columns]
+
+    # Find first two numeric columns
+    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    if len(numeric_cols) < 2:
+        # Try converting
+        for col in df.columns:
+            try:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+            except Exception:
+                pass
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+
+    if len(numeric_cols) < 2:
+        raise ValueError(f"File {fname}: could not find at least 2 numeric columns.")
+
+    x_label = str(numeric_cols[0])
+    y_label = str(numeric_cols[1])
+    x_data = df[numeric_cols[0]].dropna().values.astype(float)
+    y_data = df[numeric_cols[1]].dropna().values.astype(float)
+    min_len = min(len(x_data), len(y_data))
+    x_data = x_data[:min_len]
+    y_data = y_data[:min_len]
+    return x_data, y_data, x_label, y_label, fname
 
 
 def _fig_to_base64(fig) -> str:
@@ -194,14 +318,19 @@ TOOLS = [
                     "title": {"type": "string", "description": "Custom plot title. Default: auto-generated from scan ID and metadata."},
                     "axis_style": {
                         "type": "object",
-                        "description": "Customize axis appearance: font sizes, colors, font family.",
+                        "description": "Customize axis appearance: font sizes, colors, font family. Supports per-axis colors.",
                         "properties": {
                             "font_family": {"type": "string", "description": "Font family for all text (e.g. 'Arial', 'Times New Roman', 'serif', 'monospace'). Default: system default."},
                             "title_size": {"type": "number", "description": "Title font size in points. Default: 14."},
+                            "title_color": {"type": "string", "description": "Title color. Default: black."},
                             "label_size": {"type": "number", "description": "Axis label font size in points. Default: 12."},
+                            "label_color": {"type": "string", "description": "Color for both axis labels. Overridden by x_label_color / y_label_color if set."},
+                            "x_label_color": {"type": "string", "description": "X-axis label color. Overrides label_color for x-axis."},
+                            "y_label_color": {"type": "string", "description": "Y-axis label color. Overrides label_color for y-axis."},
                             "tick_size": {"type": "number", "description": "Tick label font size in points. Default: 10."},
-                            "label_color": {"type": "string", "description": "Axis label color. Default: black."},
-                            "tick_color": {"type": "string", "description": "Tick label and tick mark color. Default: black."},
+                            "tick_color": {"type": "string", "description": "Color for all tick labels/marks. Overridden by x_tick_color / y_tick_color if set."},
+                            "x_tick_color": {"type": "string", "description": "X-axis tick label and mark color."},
+                            "y_tick_color": {"type": "string", "description": "Y-axis tick label and mark color."},
                             "legend_size": {"type": "number", "description": "Legend font size in points. Default: 9."},
                         },
                     },
@@ -242,14 +371,19 @@ TOOLS = [
                     "title": {"type": "string", "description": "Custom plot title. Default: auto-generated."},
                     "axis_style": {
                         "type": "object",
-                        "description": "Customize axis appearance: font sizes, colors, font family.",
+                        "description": "Customize axis appearance: font sizes, colors, font family. Supports per-axis colors.",
                         "properties": {
                             "font_family": {"type": "string", "description": "Font family for all text."},
                             "title_size": {"type": "number", "description": "Title font size in points."},
+                            "title_color": {"type": "string", "description": "Title color."},
                             "label_size": {"type": "number", "description": "Axis label font size in points."},
+                            "label_color": {"type": "string", "description": "Color for both axis labels. Overridden by x_label_color / y_label_color."},
+                            "x_label_color": {"type": "string", "description": "X-axis label color."},
+                            "y_label_color": {"type": "string", "description": "Y-axis label color."},
                             "tick_size": {"type": "number", "description": "Tick label font size in points."},
-                            "label_color": {"type": "string", "description": "Axis label color."},
-                            "tick_color": {"type": "string", "description": "Tick label and tick mark color."},
+                            "tick_color": {"type": "string", "description": "Color for all tick labels/marks. Overridden by x_tick_color / y_tick_color."},
+                            "x_tick_color": {"type": "string", "description": "X-axis tick color."},
+                            "y_tick_color": {"type": "string", "description": "Y-axis tick color."},
                             "legend_size": {"type": "number", "description": "Legend font size in points."},
                         },
                     },
@@ -382,6 +516,58 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "calibrate_scans",
+            "description": "Apply energy calibration to one or more scan files and save calibrated copies to exported_data/calibrated/. Uses the current calibration shift from the calibration panel. The calibration checkbox must be enabled.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "scan_ids": {"type": "array", "items": {"type": "string"}, "description": "List of scan identifiers to calibrate (e.g. ['45611', '45612'])."},
+                    "date": {"type": "string", "description": "Date filter to calibrate all scans in a subdirectory (e.g. '260401'). If provided, scan_ids is ignored."},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "plot_file",
+            "description": "Plot a generic two-column data file (txt, csv, dat, etc.) from exported_data/ or any path. The first column is used as X-axis, the second as Y-axis. Supports tab, comma, and space-separated formats.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filepath": {"type": "string", "description": "Path to the file, relative to the workspace. Can be in exported_data/ or elsewhere."},
+                    "title": {"type": "string", "description": "Custom plot title. Default: filename."},
+                    "color": {"type": "string", "description": "Line color. Default: blue."},
+                    "linestyle": {"type": "string", "enum": ["-", "--", "-.", ":"], "description": "Line style. Default: solid."},
+                    "linewidth": {"type": "number", "description": "Line width. Default: 1.2."},
+                    "label": {"type": "string", "description": "Custom legend label."},
+                    "axis_style": {
+                        "type": "object",
+                        "description": "Customize axis appearance.",
+                        "properties": {
+                            "font_family": {"type": "string"},
+                            "title_size": {"type": "number"},
+                            "title_color": {"type": "string"},
+                            "label_size": {"type": "number"},
+                            "label_color": {"type": "string"},
+                            "x_label_color": {"type": "string"},
+                            "y_label_color": {"type": "string"},
+                            "tick_size": {"type": "number"},
+                            "tick_color": {"type": "string"},
+                            "x_tick_color": {"type": "string"},
+                            "y_tick_color": {"type": "string"},
+                            "legend_size": {"type": "number"},
+                        },
+                    },
+                },
+                "required": ["filepath"],
+            },
+        },
+    },
 ]
 
 
@@ -492,7 +678,11 @@ def tool_plot_scan(scan_id: str, signal: str, normalize: bool = False,
 
 
 def _apply_axis_style(ax, axis_style: dict = None, ax_right=None):
-    """Apply axis styling (fonts, colors, sizes) to a matplotlib axes."""
+    """Apply axis styling (fonts, colors, sizes) to a matplotlib axes.
+
+    Supports per-axis colors via x_label_color, y_label_color,
+    x_tick_color, y_tick_color (override the generic label_color / tick_color).
+    """
     if not axis_style:
         return
     s = axis_style
@@ -501,46 +691,71 @@ def _apply_axis_style(ax, axis_style: dict = None, ax_right=None):
         font_kw["fontfamily"] = s["font_family"]
 
     # Title
-    if "title_size" in s or font_kw:
+    if "title_size" in s or "title_color" in s or font_kw:
         ax.title.set_fontsize(s.get("title_size", ax.title.get_fontsize()))
+        if "title_color" in s and s["title_color"]:
+            ax.title.set_color(s["title_color"])
         if font_kw:
             ax.title.set_fontfamily(font_kw.get("fontfamily"))
 
-    # Axis labels
+    # Axis labels — per-axis colors
     label_size = s.get("label_size")
-    label_color = s.get("label_color")
-    for axis_obj in [ax.xaxis, ax.yaxis]:
-        lbl = axis_obj.label
-        if label_size:
-            lbl.set_fontsize(label_size)
-        if label_color:
-            lbl.set_color(label_color)
-        if font_kw:
-            lbl.set_fontfamily(font_kw.get("fontfamily"))
+    label_color_generic = s.get("label_color")
+    x_label_color = s.get("x_label_color") or label_color_generic
+    y_label_color = s.get("y_label_color") or label_color_generic
+
+    # X-axis label
+    lbl_x = ax.xaxis.label
+    if label_size:
+        lbl_x.set_fontsize(label_size)
+    if x_label_color:
+        lbl_x.set_color(x_label_color)
+    if font_kw:
+        lbl_x.set_fontfamily(font_kw.get("fontfamily"))
+
+    # Y-axis label (left)
+    lbl_y = ax.yaxis.label
+    if label_size:
+        lbl_y.set_fontsize(label_size)
+    if y_label_color:
+        lbl_y.set_color(y_label_color)
+    if font_kw:
+        lbl_y.set_fontfamily(font_kw.get("fontfamily"))
 
     # Right axis labels (dual-axis)
     if ax_right:
         lbl_r = ax_right.yaxis.label
         if label_size:
             lbl_r.set_fontsize(label_size)
-        if label_color:
-            lbl_r.set_color(label_color)
+        if y_label_color:
+            lbl_r.set_color(y_label_color)
         if font_kw:
             lbl_r.set_fontfamily(font_kw.get("fontfamily"))
 
-    # Tick labels
+    # Tick labels — per-axis colors
     tick_size = s.get("tick_size")
-    tick_color = s.get("tick_color")
-    for axis_obj in [ax.xaxis, ax.yaxis]:
-        if tick_size:
-            axis_obj.set_tick_params(labelsize=tick_size)
-        if tick_color:
-            axis_obj.set_tick_params(labelcolor=tick_color, color=tick_color)
+    tick_color_generic = s.get("tick_color")
+    x_tick_color = s.get("x_tick_color") or tick_color_generic
+    y_tick_color = s.get("y_tick_color") or tick_color_generic
+
+    # X-axis ticks
+    if tick_size:
+        ax.xaxis.set_tick_params(labelsize=tick_size)
+    if x_tick_color:
+        ax.xaxis.set_tick_params(labelcolor=x_tick_color, color=x_tick_color)
+
+    # Y-axis ticks (left)
+    if tick_size:
+        ax.yaxis.set_tick_params(labelsize=tick_size)
+    if y_tick_color:
+        ax.yaxis.set_tick_params(labelcolor=y_tick_color, color=y_tick_color)
+
+    # Right axis ticks
     if ax_right:
         if tick_size:
             ax_right.yaxis.set_tick_params(labelsize=tick_size)
-        if tick_color:
-            ax_right.yaxis.set_tick_params(labelcolor=tick_color, color=tick_color)
+        if y_tick_color:
+            ax_right.yaxis.set_tick_params(labelcolor=y_tick_color, color=y_tick_color)
 
     # Legend
     legend_size = s.get("legend_size")
@@ -1066,6 +1281,121 @@ def tool_rename_scan(scan_id: str, new_name: str, **kw) -> str:
         return f"Error copying scan: {e}"
 
 
+def tool_calibrate_scans(scan_ids: list = None, date: str = None, **kw) -> str:
+    """Apply energy calibration to scan files and save calibrated copies."""
+    if not _calibration["enabled"]:
+        return ("Error: Calibration is not enabled. Please check the 'Apply calibration' "
+                "checkbox in the calibration panel and set the measured/calibrated values first.")
+
+    shift = _calibration["cal_eV"] - _calibration["raw_eV"]
+    if abs(shift) < 1e-6:
+        return "Error: Calibration shift is 0.00 eV. Please set different measured and calibrated values."
+
+    # Determine which scans to calibrate
+    if date:
+        # Calibrate all scans in a date subdirectory
+        all_ids = xu.list_scan_files(DATA_DIR, date_filter=date.strip())
+        if not all_ids:
+            return f"Error: No scans found for date filter '{date}'."
+    elif scan_ids:
+        all_ids = scan_ids
+    else:
+        return "Error: Please specify scan_ids (list) or date (string) to calibrate."
+
+    out_dir = xu.ensure_export_dir("calibrated")
+    results = []
+    errors = []
+
+    for raw_id in all_ids:
+        try:
+            sid = xu.resolve_scan_id(raw_id)
+            try:
+                fp = xu.scan_filepath(sid, DATA_DIR)
+            except FileNotFoundError:
+                export_dir = os.path.join(os.path.dirname(__file__), "exported_data")
+                fp = xu.scan_filepath(sid, export_dir)
+
+            # Read the raw file
+            with open(fp, "r") as f:
+                lines = f.readlines()
+
+            # Detect header and load data
+            df = xu.load_scan(fp)
+            energy = xu.get_energy(df)
+            energy_col = xu._find_energy_col(df)
+
+            # Apply shift to energy column in the dataframe
+            df[energy_col] = df[energy_col] + shift
+
+            # Build output filename
+            base = os.path.basename(fp)
+            name, ext = os.path.splitext(base)
+            out_name = f"{name}_cal{ext}"
+            out_path = os.path.join(out_dir, out_name)
+
+            # Write calibrated file: preserve header, rewrite data
+            header_n = xu._detect_header_lines(fp)
+            with open(out_path, "w") as f:
+                # Write original header lines
+                for i in range(header_n):
+                    if i < len(lines):
+                        f.write(lines[i])
+                # Write column header + data as tab-separated
+                df.to_csv(f, sep="\t", index=False)
+
+            results.append(f"  ✓ {sid} → {out_name}")
+        except Exception as e:
+            errors.append(f"  ✗ {raw_id}: {e}")
+
+    parts = [f"Calibration applied: shift = {shift:+.4f} eV"]
+    parts.append(f"Output directory: {out_dir}")
+    if results:
+        parts.append(f"Calibrated {len(results)} file(s):")
+        parts.extend(results)
+    if errors:
+        parts.append(f"Errors ({len(errors)}):")
+        parts.extend(errors)
+    return "\n".join(parts)
+
+
+def tool_plot_file(filepath: str, title: str = None, color: str = "blue",
+                   linestyle: str = "-", linewidth: float = 1.2,
+                   label: str = None, axis_style: dict = None, **kw) -> str:
+    """Plot a generic two-column data file."""
+    global _last_plot, _last_plot_b64
+
+    # Resolve path relative to workspace
+    if not os.path.isabs(filepath):
+        filepath = os.path.join(os.path.dirname(__file__), filepath)
+
+    if not os.path.isfile(filepath):
+        return f"Error: File not found: {filepath}"
+
+    try:
+        x_data, y_data, x_label, y_label, fname = _load_generic_file(filepath)
+    except Exception as e:
+        return f"Error loading file: {e}"
+
+    legend_label = label if label else fname
+
+    fig, ax = plt.subplots()
+    ax.plot(x_data, y_data, color=color, linestyle=linestyle,
+            linewidth=linewidth, label=legend_label)
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+    plot_title = title if title else fname
+    ax.set_title(plot_title)
+    ax.legend(fontsize=9)
+    _apply_axis_style(ax, axis_style)
+    plt.tight_layout()
+
+    img_b64 = _fig_to_base64(fig)
+    _pending_images.append(img_b64)
+    _last_plot_b64 = img_b64
+    _last_plot = {"energy": x_data, "signal": y_data, "signal_name": y_label, "scan_id": fname}
+    return f"Plotted {fname}: {len(x_data)} points, X={x_label}, Y={y_label}."
+
+
 TOOL_DISPATCH = {
     "list_scans": tool_list_scans,
     "plot_scan": tool_plot_scan,
@@ -1078,6 +1408,8 @@ TOOL_DISPATCH = {
     "find_peaks_scan": tool_find_peaks_scan,
     "identify_edge": tool_identify_edge,
     "rename_scan": tool_rename_scan,
+    "calibrate_scans": tool_calibrate_scans,
+    "plot_file": tool_plot_file,
 }
 
 
@@ -1111,10 +1443,12 @@ Available tools:
 - save_data: Export the last plotted/processed data (energy + signal columns only) to a text file
 - save_image: Export the last plot as a PNG image file to exported_data/images/
 - rename_scan: Duplicate a complete raw scan file with a descriptive name to exported_data/renamed/ (full raw data copy, original is never modified)
+- calibrate_scans: Apply the current energy calibration shift to one or more scan files (or all scans in a date subdirectory) and save calibrated copies to exported_data/calibrated/. The calibration checkbox must be enabled.
+- plot_file: Plot a generic two-column data file (txt, csv, dat, etc.) from exported_data/ or any path. First column = X, second column = Y.
 
 Rules:
 - The user may refer to scans by full ID (SigScan45611) or just the number (45611)
-- Scans are found automatically regardless of which subdirectory they are in
+- Scans are found automatically regardless of which subdirectory they are in — including in exported_data/
 - When the user says "plot" or "show", use plot_scan or compare_scans
 - When the user asks to "zoom in" or specifies an energy range (e.g. "plot from 520 to 560 eV"), use e_min/e_max parameters
 - When the user asks to plot two different signals (e.g. "plot TEY and MCP"), use compare_scans with signals=['TEY', 'MCP'] for dual-axis
@@ -1136,8 +1470,9 @@ Rules:
 - Do NOT call both rename_scan and save_data for the same request — choose the appropriate one
 - When the user asks to change legend text (e.g. "label it as Sample A"), use the label parameter in plot_scan or labels array in compare_scans
 - When the user asks to set a custom plot title (e.g. "title it Fe L-edge"), use the title parameter in plot_scan or compare_scans
-- When the user asks to change axis fonts, sizes, or colors (e.g. "use Arial font", "make the title bigger", "use larger tick labels"), use the axis_style parameter with appropriate keys: font_family, title_size, label_size, tick_size, label_color, tick_color, legend_size
-- axis_style example: {{"font_family": "Arial", "title_size": 16, "label_size": 14, "tick_size": 12}}
+- When the user asks to change axis fonts, sizes, or colors (e.g. "use Arial font", "make the title bigger", "use larger tick labels"), use the axis_style parameter with appropriate keys: font_family, title_size, title_color, label_size, label_color, tick_size, tick_color, legend_size
+- For per-axis colors, use x_label_color, y_label_color, x_tick_color, y_tick_color (these override the generic label_color / tick_color)
+- axis_style example: {{"font_family": "Arial", "title_size": 16, "label_size": 14, "x_label_color": "blue", "y_label_color": "red"}}
 - When the user asks to "list" scans, use list_scans with an appropriate date filter
 - If the user asks to list scans without specifying a date, default to the past week
 - If the user mentions a specific date like "April 1st" or "yesterday", convert it to the appropriate date filter
@@ -1148,6 +1483,10 @@ Rules:
 - derivative_scan always divides by I0 first, then computes the derivative
 - find_peaks_scan sensitivity levels: 'low' (major peaks only), 'normal' (default), 'high' (more peaks + shoulders), 'very_high' (all features)
 - If the user asks to "find more peaks" after a previous detection, increase the sensitivity level
+- When the user asks to "calibrate" multiple scans or a whole directory, use calibrate_scans with scan_ids (list) or date (string). The calibration panel must have values set and the checkbox enabled.
+- When the user asks to plot a file from exported_data/ (e.g. a calibrated file, a renamed file, or a saved data file), use plot_file with the filepath
+- plot_file works with any two-column text file (tab, comma, or space separated) — use it for exported data, calibrated data, or any generic data file
+- Scans from exported_data/ can also be used with plot_scan, compare_scans, and other scan tools — they are searched automatically
 - Be helpful and concise
 - If the request is ambiguous, make a reasonable assumption and explain what you did
 """)
