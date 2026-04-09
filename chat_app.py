@@ -123,6 +123,7 @@ matplotlib.rcParams.update({
 
 # ── State ─────────────────────────────────────────────────────────────────────
 _last_plot = {}
+_last_plot_b64 = ""   # last plot image as base64 PNG (for save_image)
 _cache = {}
 _pending_images = []  # collect base64 plot images during tool calls
 
@@ -188,6 +189,7 @@ TOOLS = [
                     "color": {"type": "string", "description": "Line color. Named colors (red, blue, green, black, orange, purple, cyan, magenta, gray) or hex (#FF0000). Default: blue."},
                     "linestyle": {"type": "string", "enum": ["-", "--", "-.", ":", "solid", "dashed", "dashdot", "dotted"], "description": "Line style. Default: solid ('-')."},
                     "linewidth": {"type": "number", "description": "Line width in points. Default: 1.2."},
+                    "label": {"type": "string", "description": "Custom legend label for the curve. Default: scan ID."},
                 },
                 "required": ["scan_id", "signal"],
             },
@@ -221,6 +223,7 @@ TOOLS = [
                             },
                         },
                     },
+                    "labels": {"type": "array", "items": {"type": "string"}, "description": "Custom legend labels, one per scan. If not provided, scan IDs are used. In dual-axis mode, each scan produces two legend entries (appended with signal name)."},
                 },
                 "required": ["scan_ids"],
             },
@@ -235,6 +238,21 @@ TOOLS = [
                 "type": "object",
                 "properties": {
                     "filename": {"type": "string", "description": "Optional filename (e.g. 'my_data.txt')."},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "save_image",
+            "description": "Save the last plot as a PNG image file in exported_data/images/.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filename": {"type": "string", "description": "Optional filename (e.g. 'my_plot.png'). '.png' is appended if missing."},
+                    "dpi": {"type": "integer", "description": "Image resolution in dots per inch. Default: 150."},
                 },
                 "required": [],
             },
@@ -388,8 +406,8 @@ def tool_list_scans(date: str = None, **kw) -> str:
 def tool_plot_scan(scan_id: str, signal: str, normalize: bool = False,
                    e_min: float = None, e_max: float = None,
                    color: str = "blue", linestyle: str = "-",
-                   linewidth: float = 1.2, **kw) -> str:
-    global _last_plot
+                   linewidth: float = 1.2, label: str = None, **kw) -> str:
+    global _last_plot, _last_plot_b64
     try:
         sid, meta, df = _load(scan_id)
     except FileNotFoundError as e:
@@ -417,18 +435,23 @@ def tool_plot_scan(scan_id: str, signal: str, normalize: bool = False,
                 f"{e_min or ''}–{e_max or ''} eV for {sid}. "
                 f"Full range is {energy.min():.2f}–{energy.max():.2f} eV.")
 
+    legend_label = label if label else sid
+
     fig, ax = plt.subplots()
     ax.plot(energy_plot, signal_plot, color=color, linestyle=linestyle,
-            linewidth=linewidth)
+            linewidth=linewidth, label=legend_label)
     ax.set_xlabel("Mono Energy (eV)")
     ax.set_ylabel(ylabel)
     title = f"{sid}  —  {meta['scan_type']}  ({meta['date']})"
     if e_min is not None or e_max is not None:
         title += f"  [{e_min or energy.min():.1f}–{e_max or energy.max():.1f} eV]"
     ax.set_title(title)
+    ax.legend(fontsize=9)
     plt.tight_layout()
 
-    _pending_images.append(_fig_to_base64(fig))
+    img_b64 = _fig_to_base64(fig)
+    _pending_images.append(img_b64)
+    _last_plot_b64 = img_b64
     _last_plot = {"energy": energy_plot, "signal": signal_plot, "signal_name": ylabel, "scan_id": sid}
     range_info = f"{energy_plot.min():.2f}–{energy_plot.max():.2f} eV, {len(energy_plot)} pts"
     return f"Plotted {ylabel} for {sid}. Energy: {range_info}."
@@ -451,8 +474,8 @@ def _get_style(styles: list, index: int, defaults: dict) -> dict:
 def tool_compare_scans(scan_ids: list, signal: str = None, signals: list = None,
                        normalize: bool = False, e_min: float = None, e_max: float = None,
                        offset: float = 0, scale: float = 1.0,
-                       styles: list = None, **kw) -> str:
-    global _last_plot
+                       styles: list = None, labels: list = None, **kw) -> str:
+    global _last_plot, _last_plot_b64
 
     # Determine signal mode: single signal or dual-axis
     dual_axis = False
@@ -510,7 +533,8 @@ def tool_compare_scans(scan_ids: list, signal: str = None, signals: list = None,
             sty_l = _get_style(styles, style_idx, {
                 "color": colors_left[i % len(colors_left)],
                 "linestyle": "-", "linewidth": 1.0})
-            ax_left.plot(energy_f, data_l, label=f"{sid} {sig_left}", **sty_l)
+            lbl_base = labels[i] if labels and i < len(labels) else sid
+            ax_left.plot(energy_f, data_l, label=f"{lbl_base} {sig_left}", **sty_l)
             style_idx += 1
 
             # Right axis signal
@@ -521,7 +545,7 @@ def tool_compare_scans(scan_ids: list, signal: str = None, signals: list = None,
             sty_r = _get_style(styles, style_idx, {
                 "color": colors_right[i % len(colors_right)],
                 "linestyle": "--", "linewidth": 1.0})
-            ax_right.plot(energy_f, data_r, label=f"{sid} {sig_right}", **sty_r)
+            ax_right.plot(energy_f, data_r, label=f"{lbl_base} {sig_right}", **sty_r)
             style_idx += 1
         else:
             # Single signal mode
@@ -532,7 +556,8 @@ def tool_compare_scans(scan_ids: list, signal: str = None, signals: list = None,
             sty = _get_style(styles, i, {
                 "color": colors_left[i % len(colors_left)],
                 "linestyle": "-", "linewidth": 1.0})
-            ax_left.plot(energy_f, sig_data, label=sid, **sty)
+            lbl = labels[i] if labels and i < len(labels) else sid
+            ax_left.plot(energy_f, sig_data, label=lbl, **sty)
 
     ax_left.set_xlabel("Mono Energy (eV)")
 
@@ -560,7 +585,9 @@ def tool_compare_scans(scan_ids: list, signal: str = None, signals: list = None,
     ax_left.set_title(title)
     plt.tight_layout()
 
-    _pending_images.append(_fig_to_base64(fig))
+    img_b64 = _fig_to_base64(fig)
+    _pending_images.append(img_b64)
+    _last_plot_b64 = img_b64
 
     first_sid, _, df0 = loaded[0]
     first_sig = sig_left if dual_axis else signal
@@ -594,6 +621,27 @@ def tool_save_data(filename: str = None, **kw) -> str:
         filename=filename,
     )
     return f"Data saved to: {path}"
+
+
+def tool_save_image(filename: str = None, dpi: int = 150, **kw) -> str:
+    """Save the last plot as a PNG image file."""
+    global _last_plot_b64
+    if not _last_plot_b64:
+        return "Error: No plot to save. Please create a plot first."
+    # Ensure export directory exists
+    img_dir = xu.ensure_export_dir("images")
+    # Generate filename
+    if not filename:
+        scan_id = _last_plot.get("scan_id", "plot")
+        filename = f"{scan_id}_plot.png"
+    if not filename.lower().endswith(".png"):
+        filename += ".png"
+    filepath = os.path.join(img_dir, filename)
+    # Decode base64 and save
+    img_data = base64.b64decode(_last_plot_b64)
+    with open(filepath, "wb") as f:
+        f.write(img_data)
+    return f"Image saved to: {filepath}"
 
 
 def _format_scan_info(scan_id: str) -> str:
@@ -687,7 +735,10 @@ def tool_normalize_scan(scan_id: str, signal: str, e0: float = None, flatten: bo
     ax2.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    _pending_images.append(_fig_to_base64(fig))
+    img_b64 = _fig_to_base64(fig)
+    _pending_images.append(img_b64)
+    global _last_plot_b64
+    _last_plot_b64 = img_b64
 
     _last_plot = {"energy": energy, "signal": norm_data, "signal_name": ylabel, "scan_id": sid}
     return (
@@ -765,7 +816,10 @@ def tool_derivative_scan(scan_id: str, signal: str, order: int = 1, smooth_windo
     ax2.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    _pending_images.append(_fig_to_base64(fig))
+    img_b64 = _fig_to_base64(fig)
+    _pending_images.append(img_b64)
+    global _last_plot_b64
+    _last_plot_b64 = img_b64
 
     _last_plot = {"energy": energy, "signal": deriv, "signal_name": f"{ordinal}_deriv_{signal}", "scan_id": sid}
 
@@ -816,7 +870,10 @@ def tool_find_peaks_scan(scan_id: str, signal: str, sensitivity: str = "normal",
     ax.legend(handles=[peak_marker, shoulder_marker], fontsize=9)
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
-    _pending_images.append(_fig_to_base64(fig))
+    img_b64 = _fig_to_base64(fig)
+    _pending_images.append(img_b64)
+    global _last_plot_b64
+    _last_plot_b64 = img_b64
 
     _last_plot = {"energy": energy, "signal": mu, "signal_name": f"{signal}_I0", "scan_id": sid}
 
@@ -916,6 +973,7 @@ TOOL_DISPATCH = {
     "plot_scan": tool_plot_scan,
     "compare_scans": tool_compare_scans,
     "save_data": tool_save_data,
+    "save_image": tool_save_image,
     "show_scan_info": tool_show_scan_info,
     "normalize_scan": tool_normalize_scan,
     "derivative_scan": tool_derivative_scan,
@@ -953,6 +1011,7 @@ Available tools:
 - find_peaks_scan: Detect peaks and shoulders with tunable sensitivity
 - identify_edge: Identify element and absorption edge from peak energies and metadata
 - save_data: Export the last plotted/processed data (energy + signal columns only) to a text file
+- save_image: Export the last plot as a PNG image file to exported_data/images/
 - rename_scan: Duplicate a complete raw scan file with a descriptive name to exported_data/renamed/ (full raw data copy, original is never modified)
 
 Rules:
@@ -975,7 +1034,9 @@ Rules:
 - When the user says "save" or "export" the plotted/processed data, use save_data (exports only energy + signal columns)
 - When the user says "rename", "copy as", "save as", or "duplicate", use rename_scan to create a full raw data copy with a descriptive name
 - rename_scan and save_data are different: rename_scan copies the entire raw file; save_data exports only the last plotted data
+- save_image exports the last plot as a PNG image file — use when the user says "save the plot", "export image", "save as PNG"
 - Do NOT call both rename_scan and save_data for the same request — choose the appropriate one
+- When the user asks to change legend text (e.g. "label it as Sample A"), use the label parameter in plot_scan or labels array in compare_scans
 - When the user asks to "list" scans, use list_scans with an appropriate date filter
 - If the user asks to list scans without specifying a date, default to the past week
 - If the user mentions a specific date like "April 1st" or "yesterday", convert it to the appropriate date filter
@@ -1376,12 +1437,12 @@ HTML_TEMPLATE = r"""
           <button id="cal-refresh" title="Refresh calibration from server">⟳</button>
         </div>
         <div class="cal-row">
-          <label>Raw (eV):</label>
-          <input type="number" id="cal-raw" step="0.01" value="0" />
+          <label>Measured:</label>
+          <input type="number" id="cal-raw" step="0.01" value="0" placeholder="eV" />
         </div>
         <div class="cal-row">
-          <label>Calib (eV):</label>
-          <input type="number" id="cal-cal" step="0.01" value="0" />
+          <label>Calibrated:</label>
+          <input type="number" id="cal-cal" step="0.01" value="0" placeholder="eV" />
         </div>
         <div class="cal-check">
           <input type="checkbox" id="cal-enabled" />
