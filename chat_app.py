@@ -2551,18 +2551,18 @@ function createTreeItem(node, depth) {
       '<span class="icon"> </span>' +
       '<span class="label">📄 ' + node.name + '</span>';
 
-    // Double-click to paste scan ID into chat input
+    // Double-click to paste full filename (including .txt) into chat input
     item.addEventListener("dblclick", (e) => {
       e.preventDefault();
-      const scanId = extractScanId(node.name);
+      const fullName = node.name;  // e.g. "SigScan45611.txt" or "RuCl3_Powder_TEY_I0.txt"
       const input = document.getElementById("msg-input");
       // Insert at cursor position (or append)
       const start = input.selectionStart;
       const end = input.selectionEnd;
       const val = input.value;
-      input.value = val.substring(0, start) + scanId + val.substring(end);
+      input.value = val.substring(0, start) + fullName + val.substring(end);
       input.focus();
-      input.selectionStart = input.selectionEnd = start + scanId.length;
+      input.selectionStart = input.selectionEnd = start + fullName.length;
       // Deselect all tree items, highlight this one
       document.querySelectorAll(".tree-item.selected").forEach(el => el.classList.remove("selected"));
       item.classList.add("selected");
