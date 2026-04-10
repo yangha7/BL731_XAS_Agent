@@ -24,6 +24,7 @@ HEADER_LINES = 15          # Default lines before the column-header row (may var
 ENERGY_COL_CANDIDATES = [
     "Mono eV Calib high E Grating",
     "Mono eV Calib low E Grating",
+    "Energy_eV",                      # exported two-column files
 ]
 TEY_COL = "TEY UHV XAS"
 TFY_COL = "TFY UHV XAS"
@@ -95,9 +96,10 @@ def parse_header(filepath: str) -> dict:
 def _detect_header_lines(filepath: str) -> int:
     """Detect the number of header lines before the column-header row.
 
-    Scans for the line containing 'Time of Day' (always the first column).
-    Returns the 0-indexed row number of that line, so skiprows=N skips
-    everything before it.
+    Scans for the line containing 'Time of Day' (always the first column
+    in full SigScan files).  Returns the 0-indexed row number of that line,
+    so skiprows=N skips everything before it.
+    Returns -1 if no 'Time of Day' line is found (i.e. not a SigScan file).
     """
     with open(filepath, "r") as f:
         for i, line in enumerate(f):
@@ -105,14 +107,82 @@ def _detect_header_lines(filepath: str) -> int:
                 return i
             if i > 30:  # safety limit
                 break
-    return HEADER_LINES  # fallback to default
+    return -1  # not a SigScan file
 
 
 def load_scan(filepath: str) -> pd.DataFrame:
-    """Load a single scan file into a DataFrame."""
+    """Load a scan or data file into a DataFrame.
+
+    Works uniformly on any tab/comma/space-separated data file:
+      - Full SigScan files (55+ columns with 15-line header)
+      - Calibrated copies (same format, in exported_data/calibrated/)
+      - Renamed copies (same format, in exported_data/renamed/)
+      - Two-column exported files (e.g. Energy_eV <tab> TEY / I0)
+      - Any generic columnar text file
+    """
     skip = _detect_header_lines(filepath)
-    df = pd.read_csv(filepath, sep="\t", skiprows=skip, header=0, engine="python")
-    df.columns = [c.strip() for c in df.columns]
+    if skip >= 0:
+        # Standard SigScan file — skip header lines before column row
+        df = pd.read_csv(filepath, sep="\t", skiprows=skip, header=0, engine="python")
+        df.columns = [c.strip() for c in df.columns]
+        return df
+
+    # Not a SigScan file — auto-detect format
+    with open(filepath, "r") as f:
+        lines = f.readlines()
+
+    # Find the column-header / first-data line
+    header_line_idx = None
+    data_start = 0
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        tokens = re.split(r'[\t,\s]+', stripped)
+        numeric_count = sum(1 for t in tokens if re.match(r'^[+-]?\d*\.?\d+([eE][+-]?\d+)?$', t))
+        if numeric_count >= 2 and numeric_count >= len(tokens) * 0.5:
+            data_start = i
+            break
+        else:
+            header_line_idx = i
+
+    # Detect separator
+    if data_start < len(lines):
+        sample = lines[data_start]
+        if "\t" in sample:
+            sep = "\t"
+        elif "," in sample:
+            sep = ","
+        else:
+            sep = r"\s+"
+    else:
+        sep = "\t"
+
+    # If we found a text header line just before data, use it as column names
+    if header_line_idx is not None and header_line_idx == data_start - 1:
+        skip_rows = header_line_idx
+        hdr = 0
+    elif header_line_idx is not None:
+        skip_rows = header_line_idx
+        hdr = 0
+    else:
+        skip_rows = data_start
+        hdr = None
+
+    try:
+        df = pd.read_csv(filepath, sep=sep, skiprows=skip_rows,
+                         header=hdr, engine="python", comment="#")
+    except Exception:
+        df = pd.read_csv(filepath, sep=sep, skiprows=data_start,
+                         header=None, engine="python", comment="#")
+
+    df.columns = [str(c).strip() for c in df.columns]
+
+    # Ensure numeric columns
+    for col in df.columns:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df.dropna(how="all", inplace=True)
+
     return df
 
 
@@ -138,6 +208,7 @@ def scan_filepath(scan_id: str, data_dir: str = DATA_DIR) -> str:
     """Return the full path for a scan id, searching recursively through subdirectories.
 
     Supports both plain IDs ('45616') and subdirectory-prefixed IDs ('subdir/45616').
+    Also finds suffixed variants like 'SigScan45264_cal.txt' when searching for '45264'.
     Raises FileNotFoundError if the scan file is not found anywhere under data_dir.
     """
     sid = resolve_scan_id(scan_id)
@@ -154,11 +225,17 @@ def scan_filepath(scan_id: str, data_dir: str = DATA_DIR) -> str:
         fp = os.path.join(data_dir, f"{basename}.txt")
         if os.path.isfile(fp):
             return fp
-    # Search recursively in subdirectories
+    # Search recursively in subdirectories — exact match first
     target = f"{basename}.txt"
     for root, _dirs, files in os.walk(data_dir):
         if target in files:
             return os.path.join(root, target)
+    # Second pass: find suffixed variants (e.g. SigScan45264_cal.txt)
+    prefix = basename  # e.g. "SigScan45264"
+    for root, _dirs, files in os.walk(data_dir):
+        for f in files:
+            if f.startswith(prefix) and f.endswith(".txt") and f != target:
+                return os.path.join(root, f)
     raise FileNotFoundError(f"Scan file not found: {target} (searched {data_dir} recursively)")
 
 
@@ -289,6 +366,14 @@ def _find_energy_col(df: pd.DataFrame) -> str:
     for col in df.columns:
         if "Mono" in col and "eV" in col:
             return col
+    # Fallback: look for any column containing "energy" or "eV" (case-insensitive)
+    for col in df.columns:
+        cl = col.lower()
+        if "energy" in cl or "ev" in cl:
+            return col
+    # Last resort: use the first column (common for two-column files)
+    if len(df.columns) >= 1:
+        return df.columns[0]
     raise KeyError(
         f"No energy column found. Tried {ENERGY_COL_CANDIDATES}. "
         f"Available columns: {list(df.columns)}"
@@ -301,18 +386,36 @@ def get_energy(df: pd.DataFrame) -> np.ndarray:
 
 def get_signal(df: pd.DataFrame, signal_name: str) -> np.ndarray:
     col = SIGNAL_COLUMNS.get(signal_name.upper())
+    # Try exact mapped-column match first (e.g. TEY -> "TEY UHV XAS")
+    if col is not None and col in df.columns:
+        return df[col].values
+    # Try exact column name match (case-insensitive)
+    sig_lower = signal_name.lower()
+    for c in df.columns:
+        if c.lower() == sig_lower:
+            return df[c].values
+    # Flexible matching: look for column whose name starts with the signal name
+    # (avoids "I0" matching "TEY / I0")
+    for c in df.columns:
+        if c.lower().startswith(sig_lower):
+            return df[c].values
+    # For two-column files: if only 2 columns, return the second (non-energy) column
+    if len(df.columns) == 2:
+        return df.iloc[:, 1].values
     if col is None:
-        raise ValueError(f"Unknown signal '{signal_name}'. Choose from {list(SIGNAL_COLUMNS.keys())}")
-    if col not in df.columns:
-        raise KeyError(f"Column '{col}' not found. Available: {list(df.columns)}")
-    return df[col].values
+        raise ValueError(f"Unknown signal '{signal_name}'. Choose from {list(SIGNAL_COLUMNS.keys())} or available columns: {list(df.columns)}")
+    raise KeyError(f"Column '{col}' not found. Available: {list(df.columns)}")
 
 
 def normalize_by_i0(df: pd.DataFrame, signal_name: str) -> np.ndarray:
     sig = get_signal(df, signal_name)
-    i0 = get_signal(df, "I0")
-    with np.errstate(divide="ignore", invalid="ignore"):
-        return np.where(i0 != 0, sig / i0, 0.0)
+    # Check for exact I0 column — only divide if a dedicated I0 column exists
+    # (two-column exported files are already normalized, so skip I0 division)
+    if I0_COL in df.columns:
+        i0 = df[I0_COL].values
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return np.where(i0 != 0, sig / i0, 0.0)
+    return sig
 
 
 def list_available_signals(df: pd.DataFrame) -> list[str]:

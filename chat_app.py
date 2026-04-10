@@ -144,6 +144,12 @@ def _get_energy(df):
 
 
 def _load(scan_id: str) -> tuple:
+    """Load a scan by ID from DATA_DIR or exported_data/.
+
+    Works uniformly on any file format — full SigScan files, calibrated
+    copies, renamed copies, or two-column exported files.  Returns
+    (scan_id, meta_dict, DataFrame).
+    """
     sid = xu.resolve_scan_id(scan_id)
     if sid not in _cache:
         try:
@@ -152,7 +158,21 @@ def _load(scan_id: str) -> tuple:
             # Also search in exported_data/ directory
             export_dir = os.path.join(os.path.dirname(__file__), "exported_data")
             fp = xu.scan_filepath(sid, export_dir)
-        _cache[sid] = {"meta": xu.parse_header(fp), "df": xu.load_scan(fp)}
+        # Load the DataFrame (works for any format)
+        df = xu.load_scan(fp)
+        # Try to parse header metadata; if the file has no SigScan header,
+        # build a minimal meta dict so downstream tools still work.
+        try:
+            meta = xu.parse_header(fp)
+        except Exception:
+            meta = {
+                "filename": os.path.basename(fp),
+                "filepath": fp,
+                "scan_type": "unknown",
+                "scan_file": "",
+                "date": "",
+            }
+        _cache[sid] = {"meta": meta, "df": df}
     return sid, _cache[sid]["meta"], _cache[sid]["df"]
 
 
@@ -302,12 +322,12 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "plot_scan",
-            "description": "Plot a single XAS scan. Plots the specified signal (TEY, TFY, or MCP) vs Mono Energy in eV. Optionally normalize by I0. Use e_min/e_max to zoom into a specific energy range. Customize appearance with color, linestyle, linewidth.",
+            "description": "Plot a single scan. Works on any data file: raw SigScan files, calibrated copies, renamed copies, or two-column exported files. Plots the specified signal vs energy. For raw scans use TEY/TFY/MCP; for exported files the signal is auto-detected. Optionally normalize by I0. Use e_min/e_max to zoom.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "scan_id": {"type": "string", "description": "Scan identifier, e.g. 'SigScan45611' or '45611'."},
-                    "signal": {"type": "string", "enum": ["TEY", "TFY", "MCP"], "description": "Signal channel to plot."},
+                    "scan_id": {"type": "string", "description": "Scan identifier, e.g. 'SigScan45611' or '45611'. Also works with calibrated/renamed files found in exported_data/."},
+                    "signal": {"type": "string", "description": "Signal channel to plot (e.g. 'TEY', 'TFY', 'MCP'). For two-column files, any value works — the second column is used automatically."},
                     "normalize": {"type": "boolean", "description": "If true, divide signal by I0. Default false."},
                     "e_min": {"type": "number", "description": "Minimum energy in eV for the plot range (zoom). Optional."},
                     "e_max": {"type": "number", "description": "Maximum energy in eV for the plot range (zoom). Optional."},
@@ -345,19 +365,21 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "compare_scans",
-            "description": "Overlay multiple XAS scans on one plot for comparison. Supports energy range zoom, vertical offset/scale, dual-axis mode, and per-curve styling. Use 'styles' array to customize each curve's color, linestyle, and linewidth.",
+            "description": "Overlay multiple scans on one plot for comparison. Works on any data file (raw SigScan, calibrated, renamed, or exported). Supports energy range zoom, vertical offset/scale, per-scan horizontal/vertical shifts, dual-axis mode, and per-curve styling.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "scan_ids": {"type": "array", "items": {"type": "string"}, "description": "List of scan identifiers."},
-                    "signal": {"type": "string", "enum": ["TEY", "TFY", "MCP"], "description": "Signal channel (used when plotting one signal for all scans)."},
-                    "signals": {"type": "array", "items": {"type": "string", "enum": ["TEY", "TFY", "MCP"]}, "description": "Two signal channels for dual-axis mode, e.g. ['TEY', 'MCP']. First signal on left axis, second on right axis. Use this instead of 'signal' for dual-axis."},
+                    "signal": {"type": "string", "description": "Signal channel (e.g. 'TEY', 'TFY', 'MCP'). For two-column files, any value works."},
+                    "signals": {"type": "array", "items": {"type": "string"}, "description": "Two signal channels for dual-axis mode, e.g. ['TEY', 'MCP']. First on left axis, second on right axis."},
                     "normalize": {"type": "boolean", "description": "If true, divide by I0. Default false."},
                     "e_min": {"type": "number", "description": "Minimum energy in eV for the plot range (zoom). Optional."},
                     "e_max": {"type": "number", "description": "Maximum energy in eV for the plot range (zoom). Optional."},
                     "offset": {"type": "number", "description": "Vertical offset between curves when comparing multiple scans. Each successive scan is shifted up by this amount. Default 0. Ignored when auto_scale is set."},
                     "scale": {"type": "number", "description": "Multiply all signal values by this factor. Default 1.0. Ignored when auto_scale is set."},
                     "auto_scale": {"type": "string", "enum": ["overlay", "offset"], "description": "Auto-scale mode. 'overlay': normalize each spectrum to [0,1] and overlay them (no vertical offset) for direct shape comparison. 'offset': normalize to [0,1] and stack with uniform vertical offsets. Default: not set (no auto-scaling)."},
+                    "x_shifts": {"type": "array", "items": {"type": "number"}, "description": "Per-scan horizontal (energy) shifts in eV. Array of numbers, one per scan. Positive shifts the curve to the right. Default: no shifts."},
+                    "y_shifts": {"type": "array", "items": {"type": "number"}, "description": "Per-scan vertical shifts. Array of numbers, one per scan. Positive shifts the curve up. Applied after scaling/normalization. Default: no shifts."},
                     "styles": {
                         "type": "array",
                         "description": "Per-curve style overrides. Array of objects, one per scan (single-signal) or one per scan×signal (dual-axis: even indices=left axis, odd=right axis). Each object can have: color (string), linestyle (string), linewidth (number). Curves without a style entry use defaults.",
@@ -445,12 +467,12 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "normalize_scan",
-            "description": "Perform Athena-style XAS normalization on a scan: divide by I0, subtract pre-edge, normalize to edge step = 1. Plots the normalized spectrum and shows E0 and edge step.",
+            "description": "Perform Athena-style XAS normalization on a scan: divide by I0 (if available), subtract pre-edge, normalize to edge step = 1. Works on any data file (raw SigScan, calibrated, renamed, or two-column exported).",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "scan_id": {"type": "string", "description": "Scan identifier."},
-                    "signal": {"type": "string", "enum": ["TEY", "TFY", "MCP"], "description": "Signal channel to normalize."},
+                    "signal": {"type": "string", "description": "Signal channel (e.g. 'TEY', 'TFY', 'MCP'). For two-column files, any value works."},
                     "e0": {"type": "number", "description": "Optional edge energy in eV. If not given, determined automatically from the maximum of the 1st derivative."},
                     "flatten": {"type": "boolean", "description": "If true, also flatten the post-edge region. Default false."},
                 },
@@ -462,12 +484,12 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "derivative_scan",
-            "description": "Compute and plot the 1st or 2nd derivative of a scan signal. Uses Savitzky-Golay smoothing. The signal is first divided by I0.",
+            "description": "Compute and plot the 1st or 2nd derivative of a scan signal. Uses Savitzky-Golay smoothing. The signal is first divided by I0 (if available). Works on any data file.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "scan_id": {"type": "string", "description": "Scan identifier."},
-                    "signal": {"type": "string", "enum": ["TEY", "TFY", "MCP"], "description": "Signal channel."},
+                    "signal": {"type": "string", "description": "Signal channel (e.g. 'TEY', 'TFY', 'MCP'). For two-column files, any value works."},
                     "order": {"type": "integer", "enum": [1, 2], "description": "Derivative order: 1 for first derivative, 2 for second derivative."},
                     "smooth_window": {"type": "integer", "description": "Optional Savitzky-Golay window size (odd integer). Auto-selected if not given."},
                 },
@@ -479,12 +501,12 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "find_peaks_scan",
-            "description": "Detect peaks and shoulders in an XAS scan. Sensitivity controls how many features are found: 'low' = only major peaks, 'normal' = main peaks, 'high' = more peaks + shoulders, 'very_high' = all features including minor shoulders. If the user asks to 'find more peaks', increase sensitivity.",
+            "description": "Detect peaks and shoulders in a scan. Works on any data file. Sensitivity: 'low' = major peaks, 'normal' = main peaks, 'high' = more peaks + shoulders, 'very_high' = all features.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "scan_id": {"type": "string", "description": "Scan identifier."},
-                    "signal": {"type": "string", "enum": ["TEY", "TFY", "MCP"], "description": "Signal channel."},
+                    "signal": {"type": "string", "description": "Signal channel (e.g. 'TEY', 'TFY', 'MCP'). For two-column files, any value works."},
                     "sensitivity": {"type": "string", "enum": ["low", "normal", "high", "very_high"], "description": "Peak detection sensitivity. Default 'normal'."},
                 },
                 "required": ["scan_id", "signal"],
@@ -495,12 +517,12 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "identify_edge",
-            "description": "Identify what element and absorption edge a scan corresponds to, based on the detected peak energies and scan file metadata. Returns candidate element/edge matches ranked by likelihood.",
+            "description": "Identify what element and absorption edge a scan corresponds to. Works on any data file. Returns candidate element/edge matches ranked by likelihood.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "scan_id": {"type": "string", "description": "Scan identifier."},
-                    "signal": {"type": "string", "enum": ["TEY", "TFY", "MCP"], "description": "Signal channel to analyze."},
+                    "signal": {"type": "string", "description": "Signal channel (e.g. 'TEY', 'TFY', 'MCP'). For two-column files, any value works."},
                 },
                 "required": ["scan_id", "signal"],
             },
@@ -606,6 +628,8 @@ TOOLS = [
                     "offset": {"type": "number", "description": "Vertical offset between curves. Default 0. Ignored when auto_scale is set."},
                     "scale": {"type": "number", "description": "Multiply all Y values by this factor. Default 1.0. Ignored when auto_scale is set."},
                     "auto_scale": {"type": "string", "enum": ["overlay", "offset"], "description": "Auto-scale mode. 'overlay': normalize each file to [0,1] and overlay (no offset). 'offset': normalize to [0,1] and stack with vertical offsets. Default: not set."},
+                    "x_shifts": {"type": "array", "items": {"type": "number"}, "description": "Per-file horizontal (X) shifts. Array of numbers, one per file. Positive shifts the curve to the right. Default: no shifts."},
+                    "y_shifts": {"type": "array", "items": {"type": "number"}, "description": "Per-file vertical shifts. Array of numbers, one per file. Positive shifts the curve up. Applied after scaling/normalization. Default: no shifts."},
                     "labels": {
                         "type": "array",
                         "items": {"type": "string"},
@@ -864,6 +888,7 @@ def tool_compare_scans(scan_ids: list, signal: str = None, signals: list = None,
                        normalize: bool = False, e_min: float = None, e_max: float = None,
                        offset: float = 0, scale: float = 1.0,
                        auto_scale: str = None,
+                       x_shifts: list = None, y_shifts: list = None,
                        styles: list = None, labels: list = None,
                        title: str = None, axis_style: dict = None, **kw) -> str:
     global _last_plot, _last_plot_b64
@@ -912,6 +937,11 @@ def tool_compare_scans(scan_ids: list, signal: str = None, signals: list = None,
     for i, (sid, meta, df) in enumerate(loaded):
         energy = _get_energy(df)
 
+        # Apply per-scan horizontal shift
+        x_sh = x_shifts[i] if x_shifts and i < len(x_shifts) else 0
+        if x_sh:
+            energy = energy + x_sh
+
         # Apply energy range filter
         mask = np.ones(len(energy), dtype=bool)
         if e_min is not None:
@@ -922,6 +952,9 @@ def tool_compare_scans(scan_ids: list, signal: str = None, signals: list = None,
 
         if len(energy_f) == 0:
             continue
+
+        # Per-scan vertical shift
+        y_sh = y_shifts[i] if y_shifts and i < len(y_shifts) else 0
 
         # Compute vertical offset
         if auto_scale == "offset":
@@ -939,16 +972,13 @@ def tool_compare_scans(scan_ids: list, signal: str = None, signals: list = None,
                 data_l_raw = xu.get_signal(df, sig_left)[mask]
             if auto_scale:
                 dmin, dmax = data_l_raw.min(), data_l_raw.max()
-                data_l = (data_l_raw - dmin) / (dmax - dmin + 1e-30) + v_offset
+                data_l = (data_l_raw - dmin) / (dmax - dmin + 1e-30) + v_offset + y_sh
             else:
-                data_l = data_l_raw * scale + v_offset
+                data_l = data_l_raw * scale + v_offset + y_sh
             sty_l = _get_style(styles, style_idx, {
                 "color": colors_left[i % len(colors_left)],
                 "linestyle": "-", "linewidth": 1.0})
             # Determine legend labels for dual-axis
-            # If labels has 2× scans entries, use pairs: labels[2i] for left, labels[2i+1] for right
-            # If labels has 1× scans entries, use as-is (no signal name appended)
-            # If no labels, use scan ID + signal name
             if labels and len(labels) >= 2 * len(loaded):
                 lbl_left = labels[2 * i]
                 lbl_right_label = labels[2 * i + 1]
@@ -968,9 +998,9 @@ def tool_compare_scans(scan_ids: list, signal: str = None, signals: list = None,
                 data_r_raw = xu.get_signal(df, sig_right)[mask]
             if auto_scale:
                 dmin, dmax = data_r_raw.min(), data_r_raw.max()
-                data_r = (data_r_raw - dmin) / (dmax - dmin + 1e-30) + v_offset
+                data_r = (data_r_raw - dmin) / (dmax - dmin + 1e-30) + v_offset + y_sh
             else:
-                data_r = data_r_raw * scale + v_offset
+                data_r = data_r_raw * scale + v_offset + y_sh
             sty_r = _get_style(styles, style_idx, {
                 "color": colors_right[i % len(colors_right)],
                 "linestyle": "--", "linewidth": 1.0})
@@ -984,9 +1014,9 @@ def tool_compare_scans(scan_ids: list, signal: str = None, signals: list = None,
                 sig_data_raw = xu.get_signal(df, signal)[mask]
             if auto_scale:
                 dmin, dmax = sig_data_raw.min(), sig_data_raw.max()
-                sig_data = (sig_data_raw - dmin) / (dmax - dmin + 1e-30) + v_offset
+                sig_data = (sig_data_raw - dmin) / (dmax - dmin + 1e-30) + v_offset + y_sh
             else:
-                sig_data = sig_data_raw * scale + v_offset
+                sig_data = sig_data_raw * scale + v_offset + y_sh
             sty = _get_style(styles, i, {
                 "color": colors_left[i % len(colors_left)],
                 "linestyle": "-", "linewidth": 1.0})
@@ -1587,9 +1617,10 @@ def tool_compare_files(filepaths: list, title: str = None,
                        e_min: float = None, e_max: float = None,
                        offset: float = 0, scale: float = 1.0,
                        auto_scale: str = None,
+                       x_shifts: list = None, y_shifts: list = None,
                        labels: list = None, styles: list = None,
                        axis_style: dict = None, **kw) -> str:
-    """Overlay multiple generic two-column data files on a single plot."""
+    """Overlay multiple data files on a single plot."""
     global _last_plot, _last_plot_b64
 
     # Normalize auto_scale parameter
@@ -1632,6 +1663,11 @@ def tool_compare_files(filepaths: list, title: str = None,
 
         loaded_names.append(fname)
 
+        # Apply per-file horizontal shift
+        x_sh = x_shifts[i] if x_shifts and i < len(x_shifts) else 0
+        if x_sh:
+            x_data = x_data + x_sh
+
         # Apply energy/X range filter
         mask = np.ones(len(x_data), dtype=bool)
         if e_min is not None:
@@ -1644,6 +1680,9 @@ def tool_compare_files(filepaths: list, title: str = None,
         if len(x_f) == 0:
             continue
 
+        # Per-file vertical shift
+        y_sh = y_shifts[i] if y_shifts and i < len(y_shifts) else 0
+
         # Compute vertical offset
         if auto_scale == "offset":
             v_offset = i * 1.1
@@ -1655,9 +1694,9 @@ def tool_compare_files(filepaths: list, title: str = None,
         # Apply scaling / normalization
         if auto_scale:
             dmin, dmax = y_f.min(), y_f.max()
-            y_plot = (y_f - dmin) / (dmax - dmin + 1e-30) + v_offset
+            y_plot = (y_f - dmin) / (dmax - dmin + 1e-30) + v_offset + y_sh
         else:
-            y_plot = y_f * scale + v_offset
+            y_plot = y_f * scale + v_offset + y_sh
 
         # Style
         sty = _get_style(styles, i, {
@@ -1745,36 +1784,48 @@ There may be hundreds of subdirectories spanning years of data.
 Available signal types: TEY (Total Electron Yield), TFY (Total Fluorescence Yield), MCP (MicroChannel Plate, column "MCP Np")
 Energy column: Mono Energy in eV
 
+IMPORTANT — Uniform file handling:
+All scan tools (plot_scan, compare_scans, normalize_scan, derivative_scan, find_peaks_scan, identify_edge)
+work uniformly on ANY data file — raw SigScan files, calibrated copies, renamed copies, or two-column
+exported files. The signal parameter accepts any column name; for two-column files any value works
+(the second column is used automatically). I0 normalization is applied when I0 is available and
+skipped gracefully when it is not (e.g. for already-normalized exported files).
+
 Available tools:
 - list_scans: List scan files. Accepts an optional date filter (e.g. '260401', '2026-04-01', 'today', 'this_week', or a range '260401-260403'). Defaults to the past week. Use 'all' to list everything.
-- plot_scan: Plot a single scan (raw or divided by I0). Supports e_min/e_max to zoom into a specific energy range.
-- compare_scans: Overlay multiple scans on one plot. Supports:
+- plot_scan: Plot a single scan (raw or divided by I0). Supports e_min/e_max to zoom into a specific energy range. Works on any data file.
+- compare_scans: Overlay multiple scans on one plot. Works on any data file. Supports:
     * e_min/e_max: zoom into a specific energy range
     * offset: vertical offset between curves (each successive scan shifted up)
     * scale: multiply all signal values by a factor
     * auto_scale: normalize each spectrum to [0,1] range (min-max). Two modes: 'overlay' (default — all curves overlaid at same baseline for shape comparison) or 'offset' (stacked with uniform vertical gaps)
+    * x_shifts: per-scan horizontal (energy) shifts in eV — array of numbers, one per scan. Use when the user asks to "shift" a spectrum horizontally.
+    * y_shifts: per-scan vertical shifts — array of numbers, one per scan. Applied after scaling/normalization. Use when the user asks to "shift up/down" a specific curve.
     * signals: dual-axis mode — pass two signals like ['TEY', 'MCP'] to plot the first on the left axis and the second on the right axis
     * When using dual-axis, use 'signals' parameter (array of 2) instead of 'signal' (single string)
 - show_scan_info: Show metadata for a scan
-- normalize_scan: Athena-style XAS normalization
-- derivative_scan: Compute smoothed 1st or 2nd derivative
-- find_peaks_scan: Detect peaks and shoulders with tunable sensitivity
-- identify_edge: Identify element and absorption edge from peak energies and metadata
+- normalize_scan: Athena-style XAS normalization. Works on any data file.
+- derivative_scan: Compute smoothed 1st or 2nd derivative. Works on any data file.
+- find_peaks_scan: Detect peaks and shoulders with tunable sensitivity. Works on any data file.
+- identify_edge: Identify element and absorption edge from peak energies and metadata. Works on any data file.
 - save_data: Export the last plotted/processed data (energy + signal columns only) to a text file
 - save_image: Export the last plot as a PNG image file to exported_data/images/
 - rename_scan: Duplicate a complete raw scan file with a descriptive name to exported_data/renamed/ (full raw data copy, original is never modified)
 - calibrate_scans: Apply the current energy calibration shift to one or more scan files (or all scans in a date subdirectory) and save calibrated copies to exported_data/calibrated/. The calibration checkbox must be enabled.
-- plot_file: Plot a generic two-column data file (txt, csv, dat, etc.) from exported_data/ or any path. First column = X, second column = Y.
+- plot_file: Plot a generic data file (txt, csv, dat, etc.) from exported_data/ or any path. First column = X, second column = Y.
 - list_exports: List all files in the exported_data/ directory (including renamed/, calibrated/, images/ subdirectories). Use this to discover what files have been exported, renamed, or calibrated.
-- compare_files: Overlay multiple generic two-column data files on a single plot. Like compare_scans but for exported/generic files. Supports auto_scale, offset, scale, labels, styles, and axis_style.
+- compare_files: Overlay multiple data files on a single plot. Like compare_scans but for exported/generic files. Supports auto_scale, offset, scale, x_shifts, y_shifts, labels, styles, and axis_style.
 
 Rules:
 - The user may refer to scans by full ID (SigScan45611) or just the number (45611)
 - Scans are found automatically regardless of which subdirectory they are in — including in exported_data/
+- ALL scan tools work on ANY data file: raw SigScan, calibrated, renamed, or two-column exported files. There is no need to use different tools for different file formats.
 - When the user says "plot" or "show", use plot_scan or compare_scans
 - When the user asks to "zoom in" or specifies an energy range (e.g. "plot from 520 to 560 eV"), use e_min/e_max parameters
 - When the user asks to plot two different signals (e.g. "plot TEY and MCP"), use compare_scans with signals=['TEY', 'MCP'] for dual-axis
 - When the user asks to "offset" or "stack" curves, use the offset parameter in compare_scans
+- When the user asks to "shift" a spectrum horizontally (e.g. "shift the second scan by 2 eV"), use x_shifts in compare_scans or compare_files
+- When the user asks to "shift up" or "shift down" a specific curve, use y_shifts in compare_scans or compare_files
 - When the user asks to "auto scale", "auto-scale", "normalize and stack", "normalize and compare", or "make them comparable" for multiple spectra with different intensities, use auto_scale in compare_scans or compare_files. Two modes: auto_scale="overlay" (default — normalize to [0,1] and overlay all curves at same baseline for shape comparison) or auto_scale="offset" (normalize to [0,1] and stack with vertical gaps). If the user just says "auto scale" without specifying, use "overlay".
 - When the user asks to "scale" or "multiply" signals, use the scale parameter in compare_scans
 - When the user asks to change line color, thickness, or style (e.g. "use a red dashed line", "make it thicker", "use dotted lines"), use the color/linestyle/linewidth parameters in plot_scan, or the styles array in compare_scans
@@ -1804,14 +1855,13 @@ Rules:
 - When the user asks about a specific scan's details, use show_scan_info
 - When the user asks for metadata on multiple scans, use show_scan_info with scan_ids (array) instead of calling it multiple times
 - I0 is the incident beam intensity; normalizing by I0 removes beam current variations
-- normalize_scan always divides by I0 first, then does pre-edge subtraction and post-edge normalization
-- derivative_scan always divides by I0 first, then computes the derivative
+- normalize_scan divides by I0 first (if available), then does pre-edge subtraction and post-edge normalization
+- derivative_scan divides by I0 first (if available), then computes the derivative
 - find_peaks_scan sensitivity levels: 'low' (major peaks only), 'normal' (default), 'high' (more peaks + shoulders), 'very_high' (all features)
 - If the user asks to "find more peaks" after a previous detection, increase the sensitivity level
 - When the user asks to "calibrate" multiple scans or a whole directory, use calibrate_scans with scan_ids (list) or date (string). The calibration panel must have values set and the checkbox enabled.
-- When the user asks to plot a file from exported_data/ (e.g. a calibrated file, a renamed file, or a saved data file), use plot_file with the filepath
-- plot_file works with any two-column text file (tab, comma, or space separated) — use it for exported data, calibrated data, or any generic data file
-- Scans from exported_data/ can also be used with plot_scan, compare_scans, and other scan tools — they are searched automatically
+- When the user asks to plot a file from exported_data/ (e.g. a calibrated file, a renamed file, or a saved data file), use plot_file with the filepath or use plot_scan/compare_scans with the scan ID
+- Scans from exported_data/ can also be used with plot_scan, compare_scans, normalize_scan, derivative_scan, find_peaks_scan, and identify_edge — they are searched automatically by scan ID
 - When the user asks "what files are in exported_data", "list exports", "show exported files", "what have I saved", or wants to see what's in exported_data/, use list_exports
 - list_exports shows all files including subdirectories (renamed/, calibrated/, images/) — use it to discover available exported files before plotting them
 - When the user asks to plot or compare multiple exported data files together (e.g. "plot RuCl3 and RuO2 TEY together", "compare these exported files"), use compare_files with the file paths. Use list_exports first if you need to discover the file paths.
