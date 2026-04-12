@@ -12,6 +12,7 @@ This project provides a conversational chat interface where users can explore, v
 731_Agent/
 ├── chat_app.py          # Flask web app — chat UI + tool definitions + agent loop
 ├── xas_utils.py         # Core XAS data utilities (parsing, normalization, derivatives, peaks)
+├── exp_info.py          # Experiment info manager — persistent scan metadata/comments
 ├── XAS_Agent.ipynb      # Jupyter notebook — launches the Flask app
 ├── .env                 # API key (CBORG_API_KEY)
 ├── 731_Data/            # Scan data files (SigScan*.txt)
@@ -19,8 +20,10 @@ This project provides a conversational chat interface where users can explore, v
 │   ├── SigScan45612.txt
 │   ├── 260401/          # Date-coded subdirectories (YYMMDD)
 │   └── ...
-├── exported_data/       # Saved/exported analysis results
-│   ├── *.txt            # Exported two-column data files
+├── exp_info/            # Persistent experiment metadata (long-term memory)
+│   └── exp_info.txt     # JSON dictionary of scan comments, sorted by scan number
+├── exported_data/       # Saved/exported analysis results (temporary, can be deleted)
+│   ├── *.txt / *.csv    # Exported data files (txt, csv, tsv, dat)
 │   ├── renamed/         # Renamed scan copies (full raw data)
 │   ├── calibrated/      # Energy-calibrated scan copies
 │   └── images/          # Saved plot images (PNG)
@@ -136,15 +139,17 @@ The agent has access to the following analysis tools, which it calls automatical
 | **compare_scans** | Overlay multiple scans on one plot | *"Compare scans 45611 and 45612 TEY"* |
 | **compare_files** | Overlay multiple exported data files on one plot | *"Plot RuCl3 and RuO2 TEY together"* |
 | **plot_file** | Plot a generic two-column data file | *"Plot exported_data/RuCl3_Powder_TEY_I0.txt"* |
-| **show_scan_info** | Show scan metadata (date, file path, columns, etc.) | *"Show info for scan 45616"* |
+| **show_scan_info** | Show scan metadata (date, file path, columns, user notes) | *"Show info for scan 45616"* |
 | **normalize_scan** | Athena-style pre-edge subtraction and post-edge normalization | *"Normalize scan 45616 MCP"* |
 | **derivative_scan** | Compute smoothed 1st or 2nd derivative (Savitzky-Golay) | *"Show the 2nd derivative of scan 45616 MCP"* |
 | **find_peaks_scan** | Detect peaks and shoulders with tunable sensitivity | *"Find peaks in scan 45616 MCP"* |
 | **identify_edge** | Identify element and absorption edge from peak energies + metadata | *"What element is scan 45616?"* |
-| **save_data** | Export the last plotted data to a text file | *"Save that data"* |
+| **save_data** | Export the last plotted data to a file (txt, csv, tsv, dat) | *"Save that data as results.csv"* |
 | **save_image** | Export the last plot as a PNG image | *"Save the plot as PNG"* |
 | **rename_scan** | Copy a scan with a descriptive name (original unchanged) | *"Rename scan 45616 to Cu_L3_edge_sample_A"* |
 | **calibrate_scans** | Apply energy calibration shift to scan files in batch | *"Calibrate all scans from 260401"* |
+| **update_exp_info** | Add/update user comments for a scan (persistent metadata) | *"45679 is a calibration scan for TiO2"* |
+| **search_exp_info** | Search experiment info by keyword or list all entries | *"Which scans are TiO2?"*, *"Show all notes"* |
 
 ### Peak Detection Sensitivity
 
@@ -219,6 +224,48 @@ Calibrated copies are saved to `exported_data/calibrated/` with `_cal` suffix.
 - Two-column data files can be plotted with `plot_file` or compared with `compare_files`
 - Use `list_exports` to discover what files have been exported
 - All file tools support `e_min`/`e_max` for energy range filtering
+- Data can be exported as `.txt` (tab-separated), `.csv` (comma-separated), `.tsv`, or `.dat` — the format is determined by the file extension you specify
+
+### Experiment Info (Persistent Scan Metadata)
+
+The agent maintains a persistent experiment info file (`exp_info/exp_info.txt`) that stores user-provided comments about scans. This serves as a **long-term memory** that persists even if `exported_data/` is deleted.
+
+**How it works:**
+
+- When you tell the agent about a scan (e.g., *"45679 is a calibration scan for TiO2"*), it automatically records the comment with a timestamp from the scan file header
+- Comments are stored as a JSON dictionary sorted by scan number, with entries like:
+  ```json
+  {
+    "45679": "[4/2/2026 13:48:26] calibration scan for TiO2",
+    "45680": "[4/2/2026 14:15:03] Fe L-edge sample A at 300K"
+  }
+  ```
+- You can search by keyword: *"Which scans are TiO2?"*, *"Plot the most recent TiO2 calibration scan"*
+- You can correct mistakes: *"Actually 45679 is RuO2, not TiO2"* — the agent will confirm before replacing
+- When you ask for scan info (`show_scan_info`), user notes are automatically included
+- Time-based queries work too: *"Show me the first TiO2 scan from April"*
+
+**Key design decisions:**
+
+- `exp_info/` is separate from `exported_data/` — it's meant to be kept long-term
+- Only the user's exact words are stored (plus the auto-prepended timestamp)
+- Duplicate comments are detected and skipped; new details are appended with ` | ` separator
+- The scan number in filenames determines chronological order (higher = more recent)
+
+### Numbered Options
+
+When the agent presents multiple choices, they are shown as a numbered list. You can simply type the number (e.g., `1`) to select an option instead of typing the full request:
+
+```
+Agent: Here are some options for scan 45679:
+  1. Plot the TEY signal
+  2. Show the scan metadata
+  3. Compare with the previous calibration scan
+  Or type your own request if none of the above applies.
+
+You: 1
+→ Executes "Plot the TEY signal"
+```
 
 ## Data Format
 
@@ -301,9 +348,10 @@ User ↔ Browser (HTML/CSS/JS)
        ↕ OpenAI-compatible API
      CBORG LLM (claude-sonnet)
        ↕ Tool calls
-     xas_utils.py (data processing)
-       ↕ File I/O
-     731_Data/*.txt (scan files)
+     xas_utils.py (data processing)    exp_info.py (scan metadata)
+       ↕ File I/O                        ↕ File I/O
+     731_Data/*.txt (scan files)       exp_info/exp_info.txt (persistent)
+     exported_data/ (temporary)
 ```
 
 The agent uses an iterative tool-calling loop: the LLM receives the user message, decides which tool(s) to call, the server executes them and returns results (including base64-encoded plot images), and the LLM formulates a final response.

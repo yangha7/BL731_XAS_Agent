@@ -29,6 +29,7 @@ from flask import Flask, request, jsonify, render_template_string
 # ── Ensure local imports work ─────────────────────────────────────────────────
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 import xas_utils as xu
+import exp_info
 
 # ── Load environment ─────────────────────────────────────────────────────────
 load_dotenv()
@@ -670,6 +671,37 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_exp_info",
+            "description": "Add or update user comments / metadata for a scan in the experiment info file (exp_info/exp_info.txt). Use this whenever the user provides descriptive information about a scan — sample name, purpose (calibration, test, measurement), material, edge, conditions, etc. Comments are appended if the scan already has info (duplicates are skipped). Set replace=true to overwrite the existing comment entirely (use when the user wants to correct/fix a previous comment). The exp_info file is kept sorted by scan number.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "scan_id": {"type": "string", "description": "Scan identifier (e.g. '45679' or 'SigScan45679')."},
+                    "comment": {"type": "string", "description": "Descriptive comment about the scan (e.g. 'calibration scan for TiO2', 'Fe L-edge sample A at 300K')."},
+                    "replace": {"type": "boolean", "description": "If true, replace the existing comment entirely instead of appending. Use when the user wants to correct/fix a previous comment. Default false."},
+                },
+                "required": ["scan_id", "comment"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_exp_info",
+            "description": "Search the experiment info file for scans matching a keyword or phrase. Use this to find scans by sample name, material, purpose, etc. (e.g. 'TiO2', 'calibration', 'Fe L-edge'). Returns matching scan numbers and their comments, sorted by scan number. Can also return all entries or just the most recent match.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search term (e.g. 'TiO2', 'calibration', 'Fe'). Use 'all' to list all entries."},
+                    "latest_only": {"type": "boolean", "description": "If true, return only the most recent (highest scan number) match. Useful for 'most recent TiO2 scan'. Default false."},
+                },
+                "required": ["query"],
+            },
+        },
+    },
 ]
 
 
@@ -1152,6 +1184,10 @@ def _format_scan_info(scan_id: str) -> str:
         f"Data Points: {len(df)}",
         f"Available Signals: {', '.join(signals)}",
     ])
+    # Include user comments from exp_info if available
+    user_comment = exp_info.get_comment(sid)
+    if user_comment:
+        lines.append(f"User Notes: {user_comment}")
     return "\n".join(lines)
 
 
@@ -1752,6 +1788,77 @@ def tool_compare_files(filepaths: list, title: str = None,
     return " ".join(parts)
 
 
+def _get_scan_timestamp(scan_id: str) -> str:
+    """Extract date and start time from a scan file header.
+
+    Returns a string like '4/2/2026 13:48:26' or just '4/2/2026' if
+    the time cannot be determined. Returns '' on failure.
+    """
+    try:
+        sid = xu.resolve_scan_id(scan_id)
+        fp = xu.scan_filepath(sid, DATA_DIR)
+        meta = xu.parse_header(fp)
+        scan_date = meta.get("date", "")
+        if not scan_date:
+            return ""
+        # Try to get the start time from the first data row ("Time of Day" column)
+        try:
+            df = xu.load_scan(fp)
+            if "Time of Day" in df.columns:
+                first_time = str(df["Time of Day"].iloc[0]).strip()
+                return f"{scan_date} {first_time}"
+        except Exception:
+            pass
+        return scan_date
+    except Exception:
+        return ""
+
+
+def tool_update_exp_info(scan_id: str, comment: str, replace: bool = False, **kw) -> str:
+    """Add or update user comments for a scan in exp_info.txt."""
+    if replace:
+        old = exp_info.get_comment(scan_id)
+        # Preserve the timestamp prefix if present in the old comment
+        timestamp_prefix = ""
+        if old and old.startswith("["):
+            bracket_end = old.find("]")
+            if bracket_end > 0:
+                timestamp_prefix = old[:bracket_end + 1] + " "
+        result = exp_info.set_comment(scan_id, timestamp_prefix + comment)
+        if old:
+            return f"{result}\n(Previous comment was: \"{old}\")"
+        return result
+    # Auto-include the scan date+time from the file header if not already present
+    existing = exp_info.get_comment(scan_id)
+    if not existing:
+        # First comment for this scan — try to include the scan timestamp
+        timestamp = _get_scan_timestamp(scan_id)
+        if timestamp:
+            comment = f"[{timestamp}] {comment}"
+    return exp_info.add_comment(scan_id, comment)
+
+
+def tool_search_exp_info(query: str, latest_only: bool = False, **kw) -> str:
+    """Search experiment info for scans matching a keyword."""
+    if query.strip().lower() == "all":
+        return exp_info.summary()
+
+    if latest_only:
+        result = exp_info.search_latest(query)
+        if result is None:
+            return f"No scans found matching '{query}' in experiment info."
+        scan_num, comment = result
+        return f"Most recent match — Scan {scan_num}: {comment}"
+
+    matches = exp_info.search(query)
+    if not matches:
+        return f"No scans found matching '{query}' in experiment info."
+    lines = [f"Found {len(matches)} match(es) for '{query}':"]
+    for scan_num, comment in matches:
+        lines.append(f"  Scan {scan_num}: {comment}")
+    return "\n".join(lines)
+
+
 TOOL_DISPATCH = {
     "list_scans": tool_list_scans,
     "plot_scan": tool_plot_scan,
@@ -1768,6 +1875,8 @@ TOOL_DISPATCH = {
     "plot_file": tool_plot_file,
     "list_exports": tool_list_exports,
     "compare_files": tool_compare_files,
+    "update_exp_info": tool_update_exp_info,
+    "search_exp_info": tool_search_exp_info,
 }
 
 
@@ -1815,6 +1924,8 @@ Available tools:
 - plot_file: Plot a generic data file (txt, csv, dat, etc.) from exported_data/ or any path. First column = X, second column = Y.
 - list_exports: List all files in the exported_data/ directory (including renamed/, calibrated/, images/ subdirectories). Use this to discover what files have been exported, renamed, or calibrated.
 - compare_files: Overlay multiple data files on a single plot. Like compare_scans but for exported/generic files. Supports auto_scale, offset, scale, x_shifts, y_shifts, labels, styles, and axis_style.
+- update_exp_info: Add user comments / metadata for a scan to the experiment info file (exp_info/exp_info.txt). Use this to record sample names, purposes, materials, conditions, etc.
+- search_exp_info: Search the experiment info for scans matching a keyword (e.g. 'TiO2', 'calibration'). Use query='all' to list all entries. Set latest_only=true to find the most recent match.
 
 Rules:
 - The user may refer to scans by full ID (SigScan45611) or just the number (45611)
@@ -1866,11 +1977,88 @@ Rules:
 - list_exports shows all files including subdirectories (renamed/, calibrated/, images/) — use it to discover available exported files before plotting them
 - When the user asks to plot or compare multiple exported data files together (e.g. "plot RuCl3 and RuO2 TEY together", "compare these exported files"), use compare_files with the file paths. Use list_exports first if you need to discover the file paths.
 - compare_files is for generic data files; compare_scans is for SigScan files. If the user refers to files by scan ID, use compare_scans. If they refer to files by name/path in exported_data/, use compare_files.
+
+EXPERIMENT INFO (exp_info) — Persistent user-provided scan metadata:
+- A JSON file at exp_info/exp_info.txt stores user comments about scans (sample name, purpose, material, conditions, etc.)
+- This file is in its own directory (exp_info/), separate from exported_data/ which is temporary. exp_info is meant as long-term memory that persists even if exported_data/ is deleted.
+- The scan number in each data filename indicates the chronological order of data collection. Higher numbers = more recent scans.
+- When the user provides descriptive information about a scan (e.g. "45679 is a calibration scan for TiO2", "scan 45680 is Fe L-edge of sample A at 300K"), ALWAYS call update_exp_info to record it. Do this proactively — do not ask the user if they want to save it.
+- If the user repeats information already stored, update_exp_info will detect the duplicate and skip it. If they add NEW details, it will be appended.
+- When the first comment is added for a scan, the scan date and start time from the file header are automatically prepended (e.g. "[4/2/2026 13:48:26] calibration scan for TiO2"). This allows time-based searches like "first TiO2 scan in March" or "TiO2 scans from the afternoon of April 2nd".
+- When the user wants to CORRECT or FIX a previous comment (e.g. "actually that's RuO2, not RuCl3"), use update_exp_info with replace=true. IMPORTANT: Before replacing, always confirm with the user by showing the old comment and the proposed new one. Only call update_exp_info with replace=true after the user confirms. The timestamp prefix is automatically preserved when replacing.
+- When the user asks to find a scan by description (e.g. "plot the most recent TiO2 calibration scan", "which scans are Fe L-edge?"), use search_exp_info to look it up. Use latest_only=true when they say "most recent" or "latest".
+- When the user asks for a scan by time (e.g. "first TiO2 scan in March", "TiO2 scans from April"), use search_exp_info and filter by the date/time in the comment (format: [M/D/YYYY HH:MM:SS]). If no matches, just say so — do NOT scan through raw data files.
+- When the user asks for scan metadata (show_scan_info), user comments from exp_info are automatically included in the output.
+- When the user asks "what do you know about scan X" or "what notes do I have", use show_scan_info (which includes exp_info comments) or search_exp_info.
+- Use search_exp_info with query='all' when the user asks to see all experiment notes or all recorded metadata.
 - Be helpful and concise
 - If the request is ambiguous, make a reasonable assumption and explain what you did
+
+NUMBERED OPTIONS — When presenting choices to the user:
+- When you want to offer the user multiple options or suggestions, present them as a numbered list (1. 2. 3. etc.)
+- Always end the list with a line like: "Or type your own request if none of the above applies."
+- The user can then simply type a number (e.g. "1") to select that option, saving them from typing the full request.
+- Example format:
+  1. Plot the TEY signal for scan 45679
+  2. Show the scan metadata
+  3. Compare with the previous calibration scan
+  Or type your own request if none of the above applies.
 """)
 
 conversation = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+
+def _expand_numbered_choice(user_message: str) -> str:
+    """If the user typed just a number (e.g. '1', '2'), look back through the
+    conversation for the last assistant message containing numbered options
+    and expand the number to the full option text.
+
+    Numbered options are lines matching patterns like:
+        1. Plot the TEY signal
+        1) Plot the TEY signal
+        **1.** Plot the TEY signal
+        **1)** Plot the TEY signal
+
+    Returns the expanded message, or the original if no match is found.
+    """
+    stripped = user_message.strip()
+    # Only expand if the message is a bare integer (optionally with a period)
+    if not re.match(r'^\d+\.?$', stripped):
+        return user_message
+
+    choice_num = int(stripped.rstrip('.'))
+
+    # Search backward through conversation for the last assistant message
+    for entry in reversed(conversation):
+        # Handle both dict and object forms
+        role = entry.get("role") if isinstance(entry, dict) else getattr(entry, "role", None)
+        content = entry.get("content") if isinstance(entry, dict) else getattr(entry, "content", None)
+        if role != "assistant" or not content:
+            continue
+
+        # Look for numbered options in the message
+        # Patterns: "1. text", "1) text", "**1.** text", "**1)** text"
+        pattern = re.compile(
+            r'^\s*(?:\*\*)?'           # optional leading **
+            r'(\d+)'                    # the number
+            r'[.)]\s*'                  # . or ) followed by space
+            r'(?:\*\*\s*)?'            # optional closing ** and space
+            r'(.+)$',                   # the option text
+            re.MULTILINE
+        )
+        options = {}
+        for m in pattern.finditer(content):
+            num = int(m.group(1))
+            text = m.group(2).strip()
+            # Remove trailing markdown formatting
+            text = re.sub(r'\*+$', '', text).strip()
+            options[num] = text
+
+        if choice_num in options:
+            return options[choice_num]
+
+    # No matching option found — return original
+    return user_message
 
 
 def agent_chat(user_message: str) -> dict:
@@ -1878,6 +2066,9 @@ def agent_chat(user_message: str) -> dict:
     global _pending_images
     _pending_images = []
     tools_used = []
+
+    # Expand numbered choices (e.g. user types "1" to select option 1)
+    user_message = _expand_numbered_choice(user_message)
 
     conversation.append({"role": "user", "content": user_message})
 

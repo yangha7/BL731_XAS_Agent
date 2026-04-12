@@ -884,14 +884,33 @@ def export_data(
     filename: str | None = None,
     subdir: str | None = None,
 ) -> str:
+    # Recognized data file extensions (no auto-append needed)
+    KNOWN_EXTENSIONS = {".txt", ".csv", ".tsv", ".dat"}
+
     out_dir = ensure_export_dir(subdir)
     if filename is None:
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{scan_id}_{signal_name}_{ts}.txt"
-    if not filename.endswith(".txt"):
+
+    # Only append .txt if the file has no recognized extension
+    _, ext = os.path.splitext(filename)
+    if ext.lower() not in KNOWN_EXTENSIONS:
         filename += ".txt"
+        ext = ".txt"
+
     out_path = os.path.join(out_dir, filename)
-    header_line = f"Energy_eV\t{signal_name}"
+
+    # Choose delimiter based on extension
+    if ext.lower() == ".csv":
+        delimiter = ","
+        header_line = f"Energy_eV,{signal_name}"
+    elif ext.lower() == ".tsv":
+        delimiter = "\t"
+        header_line = f"Energy_eV\t{signal_name}"
+    else:
+        delimiter = "\t"
+        header_line = f"Energy_eV\t{signal_name}"
+
     data = np.column_stack([energy, signal])
-    np.savetxt(out_path, data, delimiter="\t", header=header_line, comments="", fmt="%.10g")
+    np.savetxt(out_path, data, delimiter=delimiter, header=header_line, comments="", fmt="%.10g")
     return out_path
