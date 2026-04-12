@@ -10,10 +10,11 @@ This project provides a conversational chat interface where users can explore, v
 
 ```
 731_Agent/
+├── run_agent.py         # ⭐ One-click launcher — starts server + opens browser
 ├── chat_app.py          # Flask web app — chat UI + tool definitions + agent loop
 ├── xas_utils.py         # Core XAS data utilities (parsing, normalization, derivatives, peaks)
 ├── exp_info.py          # Experiment info manager — persistent scan metadata/comments
-├── XAS_Agent.ipynb      # Jupyter notebook — launches the Flask app
+├── XAS_Agent.ipynb      # Jupyter notebook — alternative launcher
 ├── .env                 # API key (CBORG_API_KEY)
 ├── 731_Data/            # Scan data files (SigScan*.txt)
 │   ├── SigScan45611.txt
@@ -92,20 +93,29 @@ XAS_EXPORT_DIR=/path/to/exported/data   # where saved data goes (default: export
 
 ## How to Run
 
-### Option 1: From the Jupyter Notebook
+### Option 1: One-Click Launcher (Recommended)
 
-1. Open `XAS_Agent.ipynb` in VS Code or JupyterLab
-2. Run all cells — the last cell launches the Flask server and opens your browser
-3. Chat with the agent at `http://localhost:5050`
+```bash
+cd 731_Agent
+python run_agent.py
+```
 
-### Option 2: Directly from the Terminal
+This starts the Flask server and **automatically opens your browser** at `http://localhost:5050`. Press `Ctrl+C` to stop the server.
+
+### Option 2: Direct Server Start
 
 ```bash
 cd 731_Agent
 python chat_app.py
 ```
 
-Then open `http://localhost:5050` in your browser.
+Then open `http://localhost:5050` in your browser manually.
+
+### Option 3: From the Jupyter Notebook
+
+1. Open `XAS_Agent.ipynb` in VS Code or JupyterLab
+2. Run all cells — the last cell launches the Flask server and opens your browser
+3. Chat with the agent at `http://localhost:5050`
 
 ## Data Directory Structure
 
