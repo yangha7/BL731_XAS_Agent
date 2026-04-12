@@ -184,6 +184,7 @@ Example: *"Find peaks in scan 45616 MCP with high sensitivity"*
 - **Energy calibration panel** — set reference/measured energy values and apply calibration shifts in batch
 - **Clean exported data** — one-click button to clear all exported files (with confirmation dialog)
 - **Quick-link file insertion** — click any file in the sidebar to insert its name into the chat input
+- **Confirmation popup** — when modifying existing scan comments, a modal dialog with Yes/No buttons appears for user confirmation (prevents accidental overwrites)
 
 ### Plot Styling
 
@@ -251,9 +252,17 @@ The agent maintains a persistent experiment info file (`exp_info/exp_info.txt`) 
   }
   ```
 - You can search by keyword: *"Which scans are TiO2?"*, *"Plot the most recent TiO2 calibration scan"*
-- You can correct mistakes: *"Actually 45679 is RuO2, not TiO2"* — the agent will confirm before replacing
+- You can correct mistakes: *"Actually 45679 is RuO2, not TiO2"* — a confirmation popup appears showing old vs. new comment before replacing
 - When you ask for scan info (`show_scan_info`), user notes are automatically included
 - Time-based queries work too: *"Show me the first TiO2 scan from April"*
+
+**Confirmation popup for comment changes:**
+
+- **First comment** for a scan is saved directly — no confirmation needed
+- **Any subsequent change** (append or replace) triggers a modal popup showing the current comment and the proposed new comment
+- The user must click **"Yes, Replace"** or **"No, Keep Original"** — this prevents accidental overwrites
+- Clicking outside the popup or pressing the background is treated as "No"
+- The confirmation is enforced at the backend level, so it works reliably regardless of LLM behavior
 
 **Key design decisions:**
 

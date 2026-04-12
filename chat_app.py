@@ -1814,28 +1814,81 @@ def _get_scan_timestamp(scan_id: str) -> str:
         return ""
 
 
-def tool_update_exp_info(scan_id: str, comment: str, replace: bool = False, **kw) -> str:
-    """Add or update user comments for a scan in exp_info.txt."""
-    if replace:
-        old = exp_info.get_comment(scan_id)
-        # Preserve the timestamp prefix if present in the old comment
+# Pending comment update awaiting user confirmation via the popup
+_pending_exp_info_update: dict | None = None   # {scan_id, comment, replace, old_comment}
+
+
+def _execute_pending_exp_info() -> str:
+    """Execute the stored pending exp_info update and clear it."""
+    global _pending_exp_info_update
+    p = _pending_exp_info_update
+    _pending_exp_info_update = None
+    if p is None:
+        return "No pending comment update to apply."
+    scan_id, comment, old = p["scan_id"], p["comment"], p["old_comment"]
+    if p["replace"]:
+        # Preserve the timestamp prefix from the old comment
         timestamp_prefix = ""
         if old and old.startswith("["):
             bracket_end = old.find("]")
             if bracket_end > 0:
                 timestamp_prefix = old[:bracket_end + 1] + " "
         result = exp_info.set_comment(scan_id, timestamp_prefix + comment)
-        if old:
-            return f"{result}\n(Previous comment was: \"{old}\")"
-        return result
-    # Auto-include the scan date+time from the file header if not already present
+        return f"✅ Comment for scan {scan_id} replaced.\nNew: \"{timestamp_prefix}{comment}\"\n(Previous: \"{old}\")"
+    else:
+        result = exp_info.add_comment(scan_id, comment)
+        return f"✅ Comment appended for scan {scan_id}.\nUpdated: \"{exp_info.get_comment(scan_id)}\""
+
+
+def _discard_pending_exp_info() -> str:
+    """Discard the stored pending exp_info update."""
+    global _pending_exp_info_update
+    p = _pending_exp_info_update
+    _pending_exp_info_update = None
+    if p is None:
+        return "No pending comment update to discard."
+    return f"Kept the original comment for scan {p['scan_id']}:\n\"{p['old_comment']}\""
+
+
+def tool_update_exp_info(scan_id: str, comment: str, replace: bool = False, **kw) -> str:
+    """Add or update user comments for a scan in exp_info.txt."""
+    global _pending_exp_info_update
     existing = exp_info.get_comment(scan_id)
+
+    # First comment for this scan — execute directly, no confirmation needed
     if not existing:
-        # First comment for this scan — try to include the scan timestamp
         timestamp = _get_scan_timestamp(scan_id)
         if timestamp:
             comment = f"[{timestamp}] {comment}"
-    return exp_info.add_comment(scan_id, comment)
+        return exp_info.add_comment(scan_id, comment)
+
+    # Scan already has a comment — require confirmation via popup
+    # Store the pending update and return a confirmation prompt with marker
+    _pending_exp_info_update = {
+        "scan_id": scan_id,
+        "comment": comment,
+        "replace": replace,
+        "old_comment": existing,
+    }
+    action = "replace" if replace else "append to"
+    new_display = comment
+    if replace:
+        # Show what the new comment will look like (with preserved timestamp)
+        timestamp_prefix = ""
+        if existing.startswith("["):
+            bracket_end = existing.find("]")
+            if bracket_end > 0:
+                timestamp_prefix = existing[:bracket_end + 1] + " "
+        new_display = timestamp_prefix + comment
+    else:
+        new_display = existing + " | " + comment
+
+    return (
+        f"PENDING_CONFIRM: I'd like to {action} the comment for scan {scan_id}.\n\n"
+        f"Current comment:\n> \"{existing}\"\n\n"
+        f"New comment will be:\n> \"{new_display}\"\n\n"
+        f"<!--CONFIRM_REPLACE-->"
+    )
 
 
 def tool_search_exp_info(query: str, latest_only: bool = False, **kw) -> str:
@@ -1985,7 +2038,8 @@ EXPERIMENT INFO (exp_info) — Persistent user-provided scan metadata:
 - When the user provides descriptive information about a scan (e.g. "45679 is a calibration scan for TiO2", "scan 45680 is Fe L-edge of sample A at 300K"), ALWAYS call update_exp_info to record it. Do this proactively — do not ask the user if they want to save it.
 - If the user repeats information already stored, update_exp_info will detect the duplicate and skip it. If they add NEW details, it will be appended.
 - When the first comment is added for a scan, the scan date and start time from the file header are automatically prepended (e.g. "[4/2/2026 13:48:26] calibration scan for TiO2"). This allows time-based searches like "first TiO2 scan in March" or "TiO2 scans from the afternoon of April 2nd".
-- When the user wants to CORRECT or FIX a previous comment (e.g. "actually that's RuO2, not RuCl3"), use update_exp_info with replace=true. IMPORTANT: Before replacing, always confirm with the user by showing the old comment and the proposed new one. Only call update_exp_info with replace=true after the user confirms. The timestamp prefix is automatically preserved when replacing.
+- When the user wants to CORRECT or FIX a previous comment (e.g. "actually that's RuO2, not RuCl3"), just call update_exp_info with replace=true directly. The tool will NOT execute immediately — instead it will show a confirmation popup to the user with the old and new comments. The user must click "Yes, Replace" or "No, Keep Original" in the popup. You do NOT need to ask for confirmation yourself — the tool handles it automatically. The timestamp prefix is automatically preserved when replacing.
+- When the user provides new information about a scan that ALREADY has a comment, the tool will also show a confirmation popup before appending. First comments are saved directly without confirmation.
 - When the user asks to find a scan by description (e.g. "plot the most recent TiO2 calibration scan", "which scans are Fe L-edge?"), use search_exp_info to look it up. Use latest_only=true when they say "most recent" or "latest".
 - When the user asks for a scan by time (e.g. "first TiO2 scan in March", "TiO2 scans from April"), use search_exp_info and filter by the date/time in the comment (format: [M/D/YYYY HH:MM:SS]). If no matches, just say so — do NOT scan through raw data files.
 - When the user asks for scan metadata (show_scan_info), user comments from exp_info are automatically included in the output.
@@ -2063,12 +2117,29 @@ def _expand_numbered_choice(user_message: str) -> str:
 
 def agent_chat(user_message: str) -> dict:
     """Send a message to the agent and return {text, images, tools_used}."""
-    global _pending_images
+    global _pending_images, _pending_exp_info_update
     _pending_images = []
     tools_used = []
 
     # Expand numbered choices (e.g. user types "1" to select option 1)
     user_message = _expand_numbered_choice(user_message)
+
+    # ── Handle pending exp_info confirmation (Yes/No from popup) ──────
+    if _pending_exp_info_update is not None:
+        lower = user_message.lower().strip()
+        if lower.startswith("yes"):
+            result_text = _execute_pending_exp_info()
+            conversation.append({"role": "user", "content": user_message})
+            conversation.append({"role": "assistant", "content": result_text})
+            return {"text": result_text, "images": [], "tools_used": ["🔧 update_exp_info (confirmed)"]}
+        elif lower.startswith("no"):
+            result_text = _discard_pending_exp_info()
+            conversation.append({"role": "user", "content": user_message})
+            conversation.append({"role": "assistant", "content": result_text})
+            return {"text": result_text, "images": [], "tools_used": []}
+        else:
+            # User typed something else — discard the pending update silently
+            _pending_exp_info_update = None
 
     conversation.append({"role": "user", "content": user_message})
 
@@ -2097,10 +2168,14 @@ def agent_chat(user_message: str) -> dict:
 
     conversation.append(msg)
 
+    # If a pending exp_info update was created during this turn, signal the frontend
+    has_pending_confirm = _pending_exp_info_update is not None
+
     return {
         "text": msg.content or "",
         "images": _pending_images[:],
         "tools_used": tools_used,
+        "confirm_replace": has_pending_confirm,
     }
 
 
@@ -2275,6 +2350,75 @@ HTML_TEMPLATE = r"""
     border-color: #c04040;
   }
   #confirm-dialog .btn-confirm:hover { background: #c04040; }
+
+  /* ── Comment-replace confirmation overlay ─────────────────────── */
+  #replace-overlay {
+    display: none;
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.55);
+    z-index: 9999;
+    align-items: center;
+    justify-content: center;
+  }
+  #replace-overlay.visible { display: flex; }
+  #replace-dialog {
+    background: #2d2d2d;
+    border: 1px solid #555;
+    border-radius: 8px;
+    padding: 24px 28px;
+    min-width: 360px;
+    max-width: 520px;
+    color: #e0e0e0;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  }
+  #replace-dialog .replace-title {
+    font-size: 15px;
+    font-weight: 600;
+    margin: 0 0 14px 0;
+    color: #ffa726;
+  }
+  #replace-dialog .replace-body {
+    font-size: 13px;
+    line-height: 1.6;
+    margin: 0 0 18px 0;
+    max-height: 300px;
+    overflow-y: auto;
+  }
+  #replace-dialog .replace-body blockquote {
+    border-left: 3px solid #666;
+    margin: 6px 0;
+    padding: 4px 10px;
+    color: #bbb;
+    background: #1e1e1e;
+    border-radius: 3px;
+    font-style: italic;
+  }
+  #replace-dialog .replace-buttons {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+  }
+  #replace-dialog .replace-buttons button {
+    padding: 8px 28px;
+    border-radius: 4px;
+    border: 1px solid #555;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  #replace-dialog .btn-replace-no {
+    background: #3c3c3c;
+    color: #ccc;
+  }
+  #replace-dialog .btn-replace-no:hover { background: #555; }
+  #replace-dialog .btn-replace-yes {
+    background: #2e7d32;
+    color: #fff;
+    border-color: #43a047;
+  }
+  #replace-dialog .btn-replace-yes:hover { background: #43a047; }
 
   /* ── Calibration panel ───────────────────────────────────────────── */
   #cal-panel {
@@ -2547,6 +2691,18 @@ HTML_TEMPLATE = r"""
       </div>
     </div>
 
+    <!-- ── Comment-replace confirmation overlay ──────────────────────── -->
+    <div id="replace-overlay">
+      <div id="replace-dialog">
+        <div class="replace-title">✏️ Replace Comment?</div>
+        <div class="replace-body" id="replace-body-content"></div>
+        <div class="replace-buttons">
+          <button class="btn-replace-no" id="replace-no">No, Keep Original</button>
+          <button class="btn-replace-yes" id="replace-yes">Yes, Replace</button>
+        </div>
+      </div>
+    </div>
+
     <div id="resize-handle"></div>
 
     <!-- ── Right panel: chat ────────────────────────────────────────────── -->
@@ -2641,6 +2797,11 @@ async function sendMessage() {
     if (data.text) {
       const rendered = typeof marked !== "undefined" ? marked.parse(data.text) : data.text;
       addMessage("assistant", rendered);
+    }
+
+    // Show confirmation popup if the backend signals a pending comment update
+    if (data.confirm_replace) {
+      showReplaceConfirm(data.text);
     }
 
     if (data.error) {
@@ -2929,6 +3090,39 @@ confirmYes.addEventListener("click", async () => {
     }
   } catch (err) {
     addMessage("assistant", "⚠️ Network error cleaning exports: " + err.message);
+  }
+});
+
+// ── Comment-replace confirmation popup ────────────────────────────────
+const replaceOverlay = document.getElementById("replace-overlay");
+const replaceBodyContent = document.getElementById("replace-body-content");
+const replaceNoBtn = document.getElementById("replace-no");
+const replaceYesBtn = document.getElementById("replace-yes");
+
+function showReplaceConfirm(bodyText) {
+  // Render the confirmation details (from the LLM's response) inside the popup
+  const rendered = typeof marked !== "undefined" ? marked.parse(bodyText) : bodyText;
+  replaceBodyContent.innerHTML = rendered;
+  replaceOverlay.classList.add("visible");
+}
+
+function handleReplaceChoice(answer) {
+  replaceOverlay.classList.remove("visible");
+  // Auto-send the user's choice as a chat message
+  msgInput.value = answer;
+  sendMessage();
+}
+
+replaceNoBtn.addEventListener("click", () => {
+  handleReplaceChoice("No, keep the original comment.");
+});
+replaceYesBtn.addEventListener("click", () => {
+  handleReplaceChoice("Yes, replace the comment.");
+});
+// Close on overlay background click (treat as "No")
+replaceOverlay.addEventListener("click", (e) => {
+  if (e.target === replaceOverlay) {
+    handleReplaceChoice("No, keep the original comment.");
   }
 });
 </script>
