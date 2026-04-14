@@ -159,8 +159,7 @@ def _load(scan_id: str) -> tuple:
             fp = xu.scan_filepath(sid, DATA_DIR)
         except FileNotFoundError:
             # Also search in exported_data/ directory
-            export_dir = EXPORT_DIR
-            fp = xu.scan_filepath(sid, export_dir)
+            fp = xu.scan_filepath(sid, EXPORT_DIR)
         # Load the DataFrame (works for any format)
         df = xu.load_scan(fp)
         # Try to parse header metadata; if the file has no SigScan header,
