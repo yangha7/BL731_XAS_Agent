@@ -6,6 +6,25 @@ An interactive AI-powered assistant for X-ray Absorption Spectroscopy (XAS) data
 
 This project provides a conversational chat interface where users can explore, visualize, and analyze XAS scan data collected at a synchrotron beamline. The agent understands natural language requests and uses a suite of analysis tools to process soft XAS spectra at Bl731 at ALS. This includes C, N, O K-edge, 3d transition metal L-edge, and the rare earth elements M4,5 edge.
 
+## Changelog
+
+### Branch: pc-windows-config (Windows-specific configuration)
+**Date:** April 14, 2026  
+**Status:** Active development branch (not merged to main)
+
+**Changes:**
+- **File Explorer Refresh Fix**: Disabled automatic file explorer refresh after export operations (`save_data`, `save_image`). File explorer now only refreshes when manually clicking the ⟳ button in the sidebar header.
+- **Windows Compatibility**: Added Windows-specific batch file launcher (`XAS_Agent.bat`) on desktop for one-click startup with comprehensive error checking.
+- **Environment Configuration**: Configured custom data directories for Windows environment (`XAS_DATA_DIR`, `XAS_EXPORT_DIR`, `EXP_INFO_DIR`).
+- **CORS Support**: Added Flask-CORS for cross-origin requests in web interface.
+- **Code Cleanup**: Removed user-generated `exp_info.txt` file (should not be in repository).
+
+**Technical Details:**
+- Modified `chat_app.py`: Commented out automatic refresh logic in JavaScript (lines ~2790-2792)
+- Added comprehensive validation in batch file: Python path check, directory existence, file presence
+- Environment variables properly loaded before module imports
+- All changes are PC-specific and should not be merged to main branch
+
 ## Project Structure
 
 ```
