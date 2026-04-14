@@ -25,14 +25,15 @@ import matplotlib.pyplot as plt
 from dotenv import load_dotenv
 from openai import OpenAI
 from flask import Flask, request, jsonify, render_template_string
+from flask_cors import CORS
+
+# ── Load environment ─────────────────────────────────────────────────────────
+load_dotenv()
 
 # ── Ensure local imports work ─────────────────────────────────────────────────
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 import xas_utils as xu
 import exp_info
-
-# ── Load environment ─────────────────────────────────────────────────────────
-load_dotenv()
 
 # ── LLM Provider Configuration ──────────────────────────────────────────────
 # Supported providers and their defaults:
@@ -113,9 +114,10 @@ def _configure_llm():
 
 
 client, MODEL, LLM_PROVIDER = _configure_llm()
-print(f"✅ LLM Provider: {LLM_PROVIDER} | Model: {MODEL}")
+print(f"[OK] LLM Provider: {LLM_PROVIDER} | Model: {MODEL}")
 
 DATA_DIR = os.environ.get("XAS_DATA_DIR", "731_Data")
+EXPORT_DIR = os.environ.get("XAS_EXPORT_DIR", "exported_data")
 
 # ── Matplotlib defaults ──────────────────────────────────────────────────────
 matplotlib.rcParams.update({
@@ -157,7 +159,7 @@ def _load(scan_id: str) -> tuple:
             fp = xu.scan_filepath(sid, DATA_DIR)
         except FileNotFoundError:
             # Also search in exported_data/ directory
-            export_dir = os.path.join(os.path.dirname(__file__), "exported_data")
+            export_dir = EXPORT_DIR
             fp = xu.scan_filepath(sid, export_dir)
         # Load the DataFrame (works for any format)
         df = xu.load_scan(fp)
@@ -1516,8 +1518,7 @@ def tool_calibrate_scans(scan_ids: list = None, date: str = None, **kw) -> str:
             try:
                 fp = xu.scan_filepath(sid, DATA_DIR)
             except FileNotFoundError:
-                export_dir = os.path.join(os.path.dirname(__file__), "exported_data")
-                fp = xu.scan_filepath(sid, export_dir)
+                fp = xu.scan_filepath(sid, EXPORT_DIR)
 
             # Read the raw file
             with open(fp, "r") as f:
@@ -1614,13 +1615,12 @@ def tool_plot_file(filepath: str, e_min: float = None, e_max: float = None,
 
 def tool_list_exports(**kw) -> str:
     """List all files in the exported_data/ directory."""
-    export_dir = os.path.join(os.path.dirname(__file__), "exported_data")
-    if not os.path.isdir(export_dir):
+    if not os.path.isdir(EXPORT_DIR):
         return "No exported_data/ directory found. No files have been exported yet."
 
     files_by_dir = {}
-    for root, _dirs, files in os.walk(export_dir):
-        rel = os.path.relpath(root, export_dir)
+    for root, _dirs, files in os.walk(EXPORT_DIR):
+        rel = os.path.relpath(root, EXPORT_DIR)
         if rel == ".":
             dir_label = "(top-level)"
         else:
@@ -2182,6 +2182,7 @@ def agent_chat(user_message: str) -> dict:
 # ── Flask App ─────────────────────────────────────────────────────────────────
 
 app = Flask(__name__)
+CORS(app)
 
 HTML_TEMPLATE = r"""
 <!DOCTYPE html>
@@ -2786,6 +2787,10 @@ async function sendMessage() {
     // Show tool calls
     if (data.tools_used && data.tools_used.length > 0) {
       data.tools_used.forEach(t => addMessage("tool", t));
+      // Refresh file tree if save_data or save_image was used
+      // if (data.tools_used.some(t => t.includes("save_data") || t.includes("save_image"))) {
+      //   setTimeout(() => loadFileTree(), 500); // Small delay to ensure file is written
+      // }
     }
 
     // Show images
@@ -3165,8 +3170,8 @@ def list_data_files():
             items = sorted(os.listdir(root_dir))
         except OSError:
             return entries
-        # Directories first, then files
-        dirs = [i for i in items if os.path.isdir(os.path.join(root_dir, i))]
+        # Directories first, then files - sort directories in descending order (most recent first)
+        dirs = sorted([i for i in items if os.path.isdir(os.path.join(root_dir, i))], reverse=True)[:200]  # Higher limit
         files = [i for i in items if os.path.isfile(os.path.join(root_dir, i))
                  and i.endswith(".txt") and not i.startswith(".")]
         for d in dirs:
@@ -3181,10 +3186,9 @@ def list_data_files():
     trees = [{"name": os.path.basename(DATA_DIR), "type": "dir",
               "children": _build_tree(DATA_DIR)}]
     # Include exported_data directory if it exists
-    export_dir = os.path.join(os.path.dirname(__file__) or ".", "exported_data")
-    if os.path.isdir(export_dir):
+    if os.path.isdir(EXPORT_DIR):
         trees.append({"name": "exported_data", "type": "dir",
-                       "children": _build_tree(export_dir)})
+                       "children": _build_tree(EXPORT_DIR)})
     return jsonify({"trees": trees})
 
 
@@ -3208,12 +3212,11 @@ def calibration_endpoint():
 @app.route("/api/clear-exports", methods=["POST"])
 def clear_exports():
     """Delete all files and subdirectories inside exported_data/."""
-    export_dir = os.path.join(os.path.dirname(__file__), "exported_data")
-    if not os.path.isdir(export_dir):
+    if not os.path.isdir(EXPORT_DIR):
         return jsonify({"status": "ok", "deleted": 0, "message": "No exported_data directory found."})
     count = 0
-    for entry in os.listdir(export_dir):
-        entry_path = os.path.join(export_dir, entry)
+    for entry in os.listdir(EXPORT_DIR):
+        entry_path = os.path.join(EXPORT_DIR, entry)
         try:
             if os.path.isfile(entry_path) or os.path.islink(entry_path):
                 os.unlink(entry_path)
@@ -3229,7 +3232,7 @@ def clear_exports():
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("  🤖 XAS Agent Chat")
+    print("  XAS Agent Chat")
     print("  Open http://localhost:5050 in your browser")
     print("  Press Ctrl+C to stop")
     print("=" * 60)

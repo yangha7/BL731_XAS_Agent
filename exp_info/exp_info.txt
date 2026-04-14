@@ -1,4 +1,0 @@
-{
-  "45264": "[3/10/2026 16:03:54] RuCl3 powder calibrant | Ru M4,5 edge and O K-edge",
-  "45265": "[3/10/2026 17:22:04] RuO2 powder | Ru M4,5 edge and O K-edge"
-}
