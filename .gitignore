@@ -21,6 +21,9 @@ build/
 # Exported data (user-generated)
 exported_data/
 
+# Experiment info data (user-generated, persists locally)
+exp_info/exp_info.txt
+
 # IDE
 .vscode/
 .idea/

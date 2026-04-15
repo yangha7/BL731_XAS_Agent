@@ -703,6 +703,36 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_beamline_event",
+            "description": "Record a beamline event (shutdown, optic replacement, maintenance, etc.) in the experiment info file. These events are NOT tied to specific scans — they are standalone entries that provide temporal context for the experiment history. Use this whenever the user mentions a beamline event like a shutdown, grating swap, mirror replacement, or other significant operational change.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "date": {"type": "string", "description": "Date of the event. Flexible format: 'March 2026', '4/1/2026', '2026-03', '2026-04-01', 'January 15, 2026', etc. Use whatever precision the user provides."},
+                    "event_type": {"type": "string", "description": "Type of event: 'shutdown', 'optic_replacement', 'maintenance', 'note', or any descriptive type."},
+                    "description": {"type": "string", "description": "Description of the event (e.g. 'Major shutdown for maintenance', 'Grating replaced on BL 7.3.1', 'Mirror M1 swapped')."},
+                },
+                "required": ["date", "event_type", "description"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_beamline_events",
+            "description": "Search beamline events by keyword or list all events. Use this to find shutdowns, optic replacements, maintenance events, etc. The results include dates that can be used to filter scan searches temporally (e.g. 'find scans before the shutdown').",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search term (e.g. 'shutdown', 'grating', 'maintenance'). Use 'all' to list all events."},
+                },
+                "required": ["query"],
+            },
+        },
+    },
 ]
 
 
@@ -1911,6 +1941,25 @@ def tool_search_exp_info(query: str, latest_only: bool = False, **kw) -> str:
     return "\n".join(lines)
 
 
+def tool_update_beamline_event(date: str, event_type: str, description: str, **kw) -> str:
+    """Record a beamline event (shutdown, optic replacement, etc.)."""
+    return exp_info.add_event(date, event_type, description)
+
+
+def tool_search_beamline_events(query: str, **kw) -> str:
+    """Search beamline events by keyword or list all."""
+    if query.strip().lower() == "all":
+        return exp_info.events_summary()
+
+    matches = exp_info.search_events(query)
+    if not matches:
+        return f"No beamline events found matching '{query}'."
+    lines = [f"Found {len(matches)} event(s) matching '{query}':"]
+    for e in matches:
+        lines.append(f"  [{e['date']}] {e['type']}: {e['description']}")
+    return "\n".join(lines)
+
+
 TOOL_DISPATCH = {
     "list_scans": tool_list_scans,
     "plot_scan": tool_plot_scan,
@@ -1929,6 +1978,8 @@ TOOL_DISPATCH = {
     "compare_files": tool_compare_files,
     "update_exp_info": tool_update_exp_info,
     "search_exp_info": tool_search_exp_info,
+    "update_beamline_event": tool_update_beamline_event,
+    "search_beamline_events": tool_search_beamline_events,
 }
 
 
@@ -1978,6 +2029,8 @@ Available tools:
 - compare_files: Overlay multiple data files on a single plot. Like compare_scans but for exported/generic files. Supports auto_scale, offset, scale, x_shifts, y_shifts, labels, styles, and axis_style.
 - update_exp_info: Add user comments / metadata for a scan to the experiment info file (exp_info/exp_info.txt). Use this to record sample names, purposes, materials, conditions, etc.
 - search_exp_info: Search the experiment info for scans matching a keyword (e.g. 'TiO2', 'calibration'). Use query='all' to list all entries. Set latest_only=true to find the most recent match.
+- update_beamline_event: Record a beamline event (shutdown, optic replacement, maintenance, etc.) with a date. These are standalone events not tied to specific scans.
+- search_beamline_events: Search beamline events by keyword (e.g. 'shutdown', 'grating'). Use query='all' to list all events. Returns dates useful for temporal filtering of scan searches.
 
 Rules:
 - The user may refer to scans by full ID (SigScan45611) or just the number (45611)
@@ -2030,8 +2083,8 @@ Rules:
 - When the user asks to plot or compare multiple exported data files together (e.g. "plot RuCl3 and RuO2 TEY together", "compare these exported files"), use compare_files with the file paths. Use list_exports first if you need to discover the file paths.
 - compare_files is for generic data files; compare_scans is for SigScan files. If the user refers to files by scan ID, use compare_scans. If they refer to files by name/path in exported_data/, use compare_files.
 
-EXPERIMENT INFO (exp_info) — Persistent user-provided scan metadata:
-- A JSON file at exp_info/exp_info.txt stores user comments about scans (sample name, purpose, material, conditions, etc.)
+EXPERIMENT INFO (exp_info) — Persistent user-provided scan metadata and beamline events:
+- A JSON file at exp_info/exp_info.txt stores BOTH user comments about scans AND beamline events (shutdowns, optic replacements, etc.) in a single file.
 - This file is in its own directory (exp_info/), separate from exported_data/ which is temporary. exp_info is meant as long-term memory that persists even if exported_data/ is deleted.
 - The scan number in each data filename indicates the chronological order of data collection. Higher numbers = more recent scans.
 - When the user provides descriptive information about a scan (e.g. "45679 is a calibration scan for TiO2", "scan 45680 is Fe L-edge of sample A at 300K"), ALWAYS call update_exp_info to record it. Do this proactively — do not ask the user if they want to save it.
@@ -2044,6 +2097,19 @@ EXPERIMENT INFO (exp_info) — Persistent user-provided scan metadata:
 - When the user asks for scan metadata (show_scan_info), user comments from exp_info are automatically included in the output.
 - When the user asks "what do you know about scan X" or "what notes do I have", use show_scan_info (which includes exp_info comments) or search_exp_info.
 - Use search_exp_info with query='all' when the user asks to see all experiment notes or all recorded metadata.
+
+BEAMLINE EVENTS — Standalone operational events stored alongside scan comments:
+- When the user mentions a beamline event (shutdown, optic replacement, grating swap, mirror change, maintenance, etc.), ALWAYS call update_beamline_event to record it. Do this proactively.
+- Events accept flexible date formats: "March 2026", "4/1/2026", "2026-03", "January 15, 2026", etc. Use whatever precision the user provides.
+- Event types include: "shutdown", "optic_replacement", "maintenance", "note", or any descriptive type the user implies.
+- Duplicate events are automatically detected and skipped.
+- When the user asks about beamline events (e.g. "when was the last shutdown?", "list all events"), use search_beamline_events. Use query='all' to list everything.
+- For compound temporal queries (e.g. "show me the last TiO2 calibration scan before the major shutdown last year"):
+  1. First call search_beamline_events to find the event and its date
+  2. Then call search_exp_info to find matching scans
+  3. Use your reasoning to compare dates and filter results (scan timestamps use [M/D/YYYY HH:MM:SS] format, event dates use ISO format like 2026-03 or 2026-04-01)
+  4. Present the filtered results to the user
+- Events and scan comments are stored in the same file (exp_info/exp_info.txt) so a human can read the full experiment history in one place.
 - Be helpful and concise
 - If the request is ambiguous, make a reasonable assumption and explain what you did
 
