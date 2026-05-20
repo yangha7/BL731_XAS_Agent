@@ -324,13 +324,13 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "plot_scan",
-            "description": "Plot a single scan. Works on any data file: raw SigScan files, calibrated copies, renamed copies, or two-column exported files. Plots the specified signal vs energy. For raw scans use TEY/TFY/MCP; for exported files the signal is auto-detected. Optionally normalize by I0. Use e_min/e_max to zoom.",
+            "description": "Plot a single scan. Works on any data file: raw SigScan files, calibrated copies, renamed copies, or two-column exported files. Plots the specified signal vs energy. For raw scans use TEY/TFY/MCP; for exported files the signal is auto-detected. By default the signal is divided by I0 (normalized). Set normalize=false only when the user explicitly asks for 'raw' data. Use e_min/e_max to zoom.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "scan_id": {"type": "string", "description": "Scan identifier, e.g. 'SigScan45611' or '45611'. Also works with calibrated/renamed files found in exported_data/."},
                     "signal": {"type": "string", "description": "Signal channel to plot (e.g. 'TEY', 'TFY', 'MCP'). For two-column files, any value works — the second column is used automatically."},
-                    "normalize": {"type": "boolean", "description": "If true, divide signal by I0. Default false."},
+                    "normalize": {"type": "boolean", "description": "If true, divide signal by I0. Default true. Set to false only when the user explicitly asks for 'raw' data."},
                     "e_min": {"type": "number", "description": "Minimum energy in eV for the plot range (zoom). Optional."},
                     "e_max": {"type": "number", "description": "Maximum energy in eV for the plot range (zoom). Optional."},
                     "color": {"type": "string", "description": "Line color. Named colors (red, blue, green, black, orange, purple, cyan, magenta, gray) or hex (#FF0000). Default: blue."},
@@ -367,14 +367,14 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "compare_scans",
-            "description": "Overlay multiple scans on one plot for comparison. Works on any data file (raw SigScan, calibrated, renamed, or exported). Supports energy range zoom, vertical offset/scale, per-scan horizontal/vertical shifts, dual-axis mode, and per-curve styling.",
+            "description": "Overlay multiple scans on one plot for comparison. Works on any data file (raw SigScan, calibrated, renamed, or exported). By default signals are divided by I0 (normalized). Set normalize=false only when the user explicitly asks for 'raw' data. Supports energy range zoom, vertical offset/scale, per-scan horizontal/vertical shifts, dual-axis mode, and per-curve styling.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "scan_ids": {"type": "array", "items": {"type": "string"}, "description": "List of scan identifiers."},
                     "signal": {"type": "string", "description": "Signal channel (e.g. 'TEY', 'TFY', 'MCP'). For two-column files, any value works."},
                     "signals": {"type": "array", "items": {"type": "string"}, "description": "Two signal channels for dual-axis mode, e.g. ['TEY', 'MCP']. First on left axis, second on right axis."},
-                    "normalize": {"type": "boolean", "description": "If true, divide by I0. Default false."},
+                    "normalize": {"type": "boolean", "description": "If true, divide by I0. Default true. Set to false only when the user explicitly asks for 'raw' data."},
                     "e_min": {"type": "number", "description": "Minimum energy in eV for the plot range (zoom). Optional."},
                     "e_max": {"type": "number", "description": "Maximum energy in eV for the plot range (zoom). Optional."},
                     "offset": {"type": "number", "description": "Vertical offset between curves when comparing multiple scans. Each successive scan is shifted up by this amount. Default 0. Ignored when auto_scale is set."},
@@ -783,7 +783,7 @@ def tool_list_scans(date: str = None, **kw) -> str:
     return header + "\n" + "\n".join(ids)
 
 
-def tool_plot_scan(scan_id: str, signal: str, normalize: bool = False,
+def tool_plot_scan(scan_id: str, signal: str, normalize: bool = True,
                    e_min: float = None, e_max: float = None,
                    color: str = "blue", linestyle: str = "-",
                    linewidth: float = 1.2, label: str = None,
@@ -948,7 +948,7 @@ def _get_style(styles: list, index: int, defaults: dict) -> dict:
 
 
 def tool_compare_scans(scan_ids: list, signal: str = None, signals: list = None,
-                       normalize: bool = False, e_min: float = None, e_max: float = None,
+                       normalize: bool = True, e_min: float = None, e_max: float = None,
                        offset: float = 0, scale: float = 1.0,
                        auto_scale: str = None,
                        x_shifts: list = None, y_shifts: list = None,
@@ -2005,8 +2005,8 @@ skipped gracefully when it is not (e.g. for already-normalized exported files).
 
 Available tools:
 - list_scans: List scan files. Accepts an optional date filter (e.g. '260401', '2026-04-01', 'today', 'this_week', or a range '260401-260403'). Defaults to the past week. Use 'all' to list everything.
-- plot_scan: Plot a single scan (raw or divided by I0). Supports e_min/e_max to zoom into a specific energy range. Works on any data file.
-- compare_scans: Overlay multiple scans on one plot. Works on any data file. Supports:
+- plot_scan: Plot a single scan. By default divides signal by I0 (normalized). Use normalize=false only when the user explicitly asks for "raw" data. Supports e_min/e_max to zoom into a specific energy range. Works on any data file.
+- compare_scans: Overlay multiple scans on one plot. By default divides signals by I0 (normalized). Use normalize=false only when the user explicitly asks for "raw" data. Works on any data file. Supports:
     * e_min/e_max: zoom into a specific energy range
     * offset: vertical offset between curves (each successive scan shifted up)
     * scale: multiply all signal values by a factor
@@ -2036,7 +2036,7 @@ Rules:
 - The user may refer to scans by full ID (SigScan45611) or just the number (45611)
 - Scans are found automatically regardless of which subdirectory they are in — including in exported_data/
 - ALL scan tools work on ANY data file: raw SigScan, calibrated, renamed, or two-column exported files. There is no need to use different tools for different file formats.
-- When the user says "plot" or "show", use plot_scan or compare_scans
+- When the user says "plot" or "show", use plot_scan or compare_scans. By default, always use normalize=true (divide by I0) unless the user explicitly says "raw TEY", "raw MCP", "raw TFY", or "raw data". When the user says "plot TEY", "plot MCP", or "plot TFY" without "raw", always set normalize=true.
 - When the user asks to "zoom in" or specifies an energy range (e.g. "plot from 520 to 560 eV"), use e_min/e_max parameters
 - When the user asks to plot two different signals (e.g. "plot TEY and MCP"), use compare_scans with signals=['TEY', 'MCP'] for dual-axis
 - When the user asks to "offset" or "stack" curves, use the offset parameter in compare_scans
@@ -2070,7 +2070,7 @@ Rules:
 - If the user mentions a specific date like "April 1st" or "yesterday", convert it to the appropriate date filter
 - When the user asks about a specific scan's details, use show_scan_info
 - When the user asks for metadata on multiple scans, use show_scan_info with scan_ids (array) instead of calling it multiple times
-- I0 is the incident beam intensity; normalizing by I0 removes beam current variations
+- I0 is the incident beam intensity; dividing by I0 removes beam current variations. By default, all plotting (plot_scan, compare_scans) divides by I0 automatically. Only skip I0 normalization (normalize=false) when the user explicitly requests "raw" data (e.g. "raw TEY", "raw MCP", "raw TFY", "plot the raw signal").
 - normalize_scan divides by I0 first (if available), then does pre-edge subtraction and post-edge normalization
 - derivative_scan divides by I0 first (if available), then computes the derivative
 - find_peaks_scan sensitivity levels: 'low' (major peaks only), 'normal' (default), 'high' (more peaks + shoulders), 'very_high' (all features)
@@ -3037,7 +3037,11 @@ async function loadFileTree() {
   }
 }
 
-refreshBtn.addEventListener("click", loadFileTree);
+refreshBtn.addEventListener("click", async () => {
+  // Clear the server-side data cache so files are re-read from disk
+  try { await fetch("/api/refresh", {method: "POST"}); } catch(e) {}
+  loadFileTree();
+});
 
 // ── Sidebar resize ────────────────────────────────────────────────────────
 const sidebar = document.getElementById("sidebar");
@@ -3221,8 +3225,17 @@ def chat_endpoint():
 
 @app.route("/clear", methods=["POST"])
 def clear_endpoint():
-    global conversation
+    global conversation, _cache
     conversation = [{"role": "system", "content": SYSTEM_PROMPT}]
+    _cache.clear()
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/refresh", methods=["POST"])
+def refresh_endpoint():
+    """Clear the in-memory scan data cache so files are re-read from disk."""
+    global _cache
+    _cache.clear()
     return jsonify({"status": "ok"})
 
 
