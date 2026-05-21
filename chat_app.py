@@ -469,7 +469,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "normalize_scan",
-            "description": "Perform Athena-style XAS normalization on a scan: divide by I0 (if available), subtract pre-edge, normalize to edge step = 1. Works on any data file (raw SigScan, calibrated, renamed, or two-column exported).",
+            "description": "Perform Athena-style XAS normalization on a scan: divide by I0 (if available), subtract pre-edge, normalize to edge step = 1. Works on any data file (raw SigScan, calibrated, renamed, or two-column exported). Use save=true to immediately export the normalized data to a file (avoids the _last_plot overwrite issue when processing multiple scans).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -477,8 +477,32 @@ TOOLS = [
                     "signal": {"type": "string", "description": "Signal channel (e.g. 'TEY', 'TFY', 'MCP'). For two-column files, any value works."},
                     "e0": {"type": "number", "description": "Optional edge energy in eV. If not given, determined automatically from the maximum of the 1st derivative."},
                     "flatten": {"type": "boolean", "description": "If true, also flatten the post-edge region. Default false."},
+                    "save": {"type": "boolean", "description": "If true, immediately save the normalized data to exported_data/. Default false. Use this when normalizing multiple scans to ensure each is saved correctly."},
+                    "filename": {"type": "string", "description": "Optional filename for the saved file (only used when save=true). Default: auto-generated from scan ID and signal."},
                 },
                 "required": ["scan_id", "signal"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "average_scans",
+            "description": "Average multiple scans together. Loads each scan, divides by I0 (if available), interpolates onto a common energy grid, and computes the point-by-point average. Plots the result and optionally saves it. Useful for improving signal-to-noise ratio by averaging repeated measurements.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "scan_ids": {"type": "array", "items": {"type": "string"}, "description": "List of scan identifiers to average (e.g. ['45666-0001', '45666-0002', '45666-0003'])."},
+                    "signal": {"type": "string", "description": "Signal channel (e.g. 'TEY', 'TFY', 'MCP')."},
+                    "normalize": {"type": "boolean", "description": "If true (default), divide each scan by I0 before averaging."},
+                    "save": {"type": "boolean", "description": "If true, save the averaged data to exported_data/. Default false."},
+                    "filename": {"type": "string", "description": "Optional filename for the saved file. Default: auto-generated."},
+                    "title": {"type": "string", "description": "Custom plot title. Default: auto-generated."},
+                    "e_min": {"type": "number", "description": "Minimum energy in eV for the plot range (zoom). Optional."},
+                    "e_max": {"type": "number", "description": "Maximum energy in eV for the plot range (zoom). Optional."},
+                    "show_individual": {"type": "boolean", "description": "If true, also plot individual scans (faded) behind the average. Default false."},
+                },
+                "required": ["scan_ids", "signal"],
             },
         },
     },
@@ -1242,7 +1266,8 @@ def tool_show_scan_info(scan_id: str = None, scan_ids: list = None, **kw) -> str
     return "\n\n---\n\n".join(results)
 
 
-def tool_normalize_scan(scan_id: str, signal: str, e0: float = None, flatten: bool = False, **kw) -> str:
+def tool_normalize_scan(scan_id: str, signal: str, e0: float = None, flatten: bool = False,
+                        save: bool = False, filename: str = None, **kw) -> str:
     global _last_plot
     try:
         sid, meta, df = _load(scan_id)
@@ -1289,11 +1314,142 @@ def tool_normalize_scan(scan_id: str, signal: str, e0: float = None, flatten: bo
     _last_plot_b64 = img_b64
 
     _last_plot = {"energy": energy, "signal": norm_data, "signal_name": ylabel, "scan_id": sid}
+
+    # Immediately save if requested (avoids _last_plot overwrite when processing multiple scans)
+    save_msg = ""
+    if save:
+        save_path = xu.export_data(
+            energy=energy, signal=norm_data, signal_name=ylabel,
+            scan_id=sid, filename=filename,
+        )
+        save_msg = f"\nData saved to: {save_path}"
+
     return (
         f"Normalized {signal}/I0 for {sid}.\n"
         f"E0 = {result['e0']:.2f} eV\n"
         f"Edge step = {result['edge_step']:.6f}\n"
         f"Energy range: {energy.min():.2f}–{energy.max():.2f} eV, {len(energy)} pts."
+        f"{save_msg}"
+    )
+
+
+def tool_average_scans(scan_ids: list, signal: str, normalize: bool = True,
+                       save: bool = False, filename: str = None,
+                       title: str = None, e_min: float = None, e_max: float = None,
+                       show_individual: bool = False, **kw) -> str:
+    """Average multiple scans together by interpolating onto a common energy grid."""
+    global _last_plot, _last_plot_b64
+
+    if not scan_ids or len(scan_ids) < 2:
+        return "Error: Please provide at least 2 scan IDs to average."
+
+    # Load all scans
+    loaded = []
+    for raw in scan_ids:
+        try:
+            loaded.append(_load(raw))
+        except FileNotFoundError as e:
+            return str(e)
+
+    # Get energy and signal arrays for each scan
+    energies = []
+    signals = []
+    for sid, meta, df in loaded:
+        energy = _get_energy(df)
+        if normalize:
+            sig_data = xu.normalize_by_i0(df, signal)
+        else:
+            sig_data = xu.get_signal(df, signal)
+        energies.append(energy)
+        signals.append(sig_data)
+
+    # Determine common energy grid (use the range covered by ALL scans)
+    e_lo = max(e.min() for e in energies)
+    e_hi = min(e.max() for e in energies)
+    if e_lo >= e_hi:
+        return "Error: Scans have no overlapping energy range."
+
+    # Use the finest energy step among all scans
+    steps = [np.min(np.diff(e)) for e in energies]
+    finest_step = min(steps)
+    common_energy = np.arange(e_lo, e_hi, finest_step)
+
+    # Interpolate each scan onto the common grid and average
+    interp_signals = []
+    for energy, sig_data in zip(energies, signals):
+        interp_sig = np.interp(common_energy, energy, sig_data)
+        interp_signals.append(interp_sig)
+
+    avg_signal = np.mean(interp_signals, axis=0)
+    std_signal = np.std(interp_signals, axis=0)
+
+    # Apply energy range filter (zoom)
+    mask = np.ones(len(common_energy), dtype=bool)
+    if e_min is not None:
+        mask &= common_energy >= e_min
+    if e_max is not None:
+        mask &= common_energy <= e_max
+    energy_plot = common_energy[mask]
+    avg_plot = avg_signal[mask]
+    std_plot = std_signal[mask]
+
+    if len(energy_plot) == 0:
+        return (f"Error: No data points in energy range "
+                f"{e_min or ''}–{e_max or ''} eV.")
+
+    # Plot
+    ylabel = f"{signal} / I0" if normalize else signal
+    fig, ax = plt.subplots()
+
+    # Optionally show individual scans (faded)
+    if show_individual:
+        colors = list(plt.cm.tab10.colors)
+        for i, (interp_sig, (sid, _, _)) in enumerate(zip(interp_signals, loaded)):
+            ax.plot(energy_plot, interp_sig[mask], color=colors[i % len(colors)],
+                    alpha=0.3, linewidth=0.8, label=sid)
+
+    # Plot average with error band
+    ax.plot(energy_plot, avg_plot, "b-", linewidth=1.5, label=f"Average ({len(loaded)} scans)")
+    ax.fill_between(energy_plot, avg_plot - std_plot, avg_plot + std_plot,
+                    alpha=0.2, color="blue", label="±1 std dev")
+
+    ax.set_xlabel("Mono Energy (eV)")
+    ax.set_ylabel(ylabel)
+    if title:
+        plot_title = title
+    else:
+        scan_names = ", ".join(s for s, _, _ in loaded)
+        plot_title = f"Average of {len(loaded)} scans — {ylabel}"
+    ax.set_title(plot_title)
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+
+    img_b64 = _fig_to_base64(fig)
+    _pending_images.append(img_b64)
+    _last_plot_b64 = img_b64
+
+    avg_scan_id = "avg_" + "_".join(s for s, _, _ in loaded)
+    _last_plot = {"energy": common_energy, "signal": avg_signal,
+                  "signal_name": f"avg_{ylabel}", "scan_id": avg_scan_id}
+
+    # Save if requested
+    save_msg = ""
+    if save:
+        save_path = xu.export_data(
+            energy=common_energy, signal=avg_signal,
+            signal_name=f"avg_{ylabel}", scan_id=avg_scan_id,
+            filename=filename,
+        )
+        save_msg = f"\nData saved to: {save_path}"
+
+    return (
+        f"Averaged {len(loaded)} scans: {', '.join(s for s, _, _ in loaded)}.\n"
+        f"Signal: {ylabel}\n"
+        f"Common energy range: {common_energy.min():.2f}–{common_energy.max():.2f} eV, "
+        f"{len(common_energy)} pts.\n"
+        f"Mean std dev: {std_signal.mean():.6f}"
+        f"{save_msg}"
     )
 
 
@@ -1980,6 +2136,7 @@ TOOL_DISPATCH = {
     "search_exp_info": tool_search_exp_info,
     "update_beamline_event": tool_update_beamline_event,
     "search_beamline_events": tool_search_beamline_events,
+    "average_scans": tool_average_scans,
 }
 
 
@@ -2016,7 +2173,8 @@ Available tools:
     * signals: dual-axis mode — pass two signals like ['TEY', 'MCP'] to plot the first on the left axis and the second on the right axis
     * When using dual-axis, use 'signals' parameter (array of 2) instead of 'signal' (single string)
 - show_scan_info: Show metadata for a scan
-- normalize_scan: Athena-style XAS normalization. Works on any data file.
+- normalize_scan: Athena-style XAS normalization. Works on any data file. Supports save=true to immediately export the normalized data (use this when normalizing multiple scans to avoid the save_data overwrite issue).
+- average_scans: Average multiple scans together. Interpolates onto a common energy grid and computes point-by-point average. Useful for improving signal-to-noise. Supports save=true to export the averaged data.
 - derivative_scan: Compute smoothed 1st or 2nd derivative. Works on any data file.
 - find_peaks_scan: Detect peaks and shoulders with tunable sensitivity. Works on any data file.
 - identify_edge: Identify element and absorption edge from peak energies and metadata. Works on any data file.
@@ -2048,7 +2206,8 @@ Rules:
 - For compare_scans styles: pass an array of objects like [{{"color":"red","linewidth":2}}, {{"color":"blue","linestyle":"--"}}], one per curve. In dual-axis mode, even indices are left-axis curves, odd indices are right-axis curves.
 - Available linestyles: '-' (solid), '--' (dashed), '-.' (dashdot), ':' (dotted)
 - Available colors: any named color (red, blue, green, black, orange, purple, cyan, magenta, gray, etc.) or hex codes (#FF0000)
-- When the user says "normalize", use normalize_scan
+- When the user says "normalize", use normalize_scan. IMPORTANT: When normalizing multiple scans and saving each, always use save=true in each normalize_scan call so each scan's data is saved immediately. Do NOT normalize all scans first and then call save_data multiple times — save_data only saves the LAST processed scan.
+- When the user says "average", "average scans", "combine scans", "merge scans", or "sum scans", use average_scans. Use save=true if the user also wants to save the result. Use show_individual=true if the user wants to see individual scans alongside the average.
 - When the user says "derivative", "1st derivative", "2nd derivative", or "d/dE", use derivative_scan
 - When the user says "find peaks", "detect peaks", or "peak detection", use find_peaks_scan
 - When the user says "find more peaks" or "more features", use find_peaks_scan with higher sensitivity
